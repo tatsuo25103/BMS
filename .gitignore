@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+
+# Runtime logs and generated CSV files
+*.csv
+demo_logs/
+log_write_test/
+
+# Local extracts and temporary protocol text
+pdf_text_extract.txt
+pdf_text_compact.txt
+docs/pace_pdf_stream_text.txt
+
+# OS/editor noise
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

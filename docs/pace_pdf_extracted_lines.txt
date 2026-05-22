@@ -1,0 +1,440 @@
+3
+1Physical interfaceand Communication mode
+1.1 Physical interface
+The serial communication mode is adopted for Physical Interface,which is adopted by standard RS232 
+communication mode.It provides a information transmission methods by Asynchronous mode,a start bit,a stop 
+bit,no check bit .The data transmission rate is 9600.
+1.2 Communication mode
+The Communication mode adopts the Master-Slave response mode.when the PC software or monitoring 
+equipment initiates communication command as the host,the BMS responds the return command as the slave.if 
+the host dont receive the response caomand or error information in 500 ms when the host has sent the 
+command.in this case,this communication will be failed.
+2Protocal format
+2.1Frame format
+CharA.1Frame format
+Ordinal123456789
+Bytes111112LENID/221
+FormatSOIVERADRCID1CID2LENGTHINFOCHKSUMEOI
+2.2basic format explanation
+CharA.2Basic format
+OrdinalSymbolmeaningRemarks
+1SOISTART OF INFORMATION7EH
+2VERProtocal versionV2.525H
+3ADRDevice address015
+4CID1Device indication codedevice typedescription
+5CID2Command informationcontrol indication codedata or action 
+description
+Response informationreturn code RTN
+6LENGTHINFOlength of bytesincluding LENIDand LCHKSUM
+7INFOCommand informationcontrol data infaomation(COMMAND_INFO\
+Response informationresponse data information(DATA_INFO\
+8CHKSUMCheck sum 
+9EOIEND OF INFORMATIONCR0DH
+RemarkVER-means communication veisionusually uses V2.5as 25H.
+ADR-means battery pack address,BMS uses four-digit toggle switch to set the addressthe address range 
+is 0~15.
+2.3 Data format
+2.3.1 Basic data format
+4
+Beyond that the SOI and EOI  is transmitted by 16-hex format,other items is transmitted by 16-hex ascii 
+format.every byte uses two ascii,for example,when the CID2 =4HH,the 34H and 42H will be transmitted in 
+two bytes.
+2.3.2LENGTHdata format
+CharA.3LENGTHdata format
+High byteLow byte
+Check sum code LCHKSUMLENIDmeans the informations ascii bytes
+D15D14D13D12D11D10D9D8D7D6D5D4D3D2D1D0
+2.3.3 LEDID
+LENIDmeanstheasciibytenumberofINFO,whenLENID=0,thatmeansINFOisnot.alldatabytesisnot
+upptto4096.
+HighbyteissentatfirstandlowbyteissentatsecondforLENGTHinformationwithfourASCIIcode.
+2.3.4 LCHKSUM
+ThecalculationmethodofcheckcodeD11D10D9D8+D7D6D5D4+D3D2D1D0
+Aftersum,module16takesinverseplus1
+Forexample
+INFO:ASCIIcodenumberis18thatsLENID0000 0001 0010B
+D11D10D9D8+D7D6D5D4+D3D2D1D00000B0001B0010B0011Bmodule16is0011B0011Btakesinverseplus
+1is1101BsoLCHKSUMis1101B
+soLENGTHis1101 0000 0001 0010BthatsD012H
+2.4 CHKSUMdata faomat
+AllcharasciicodeiscalculatedforsumwithoutSOI,EOIandCHKSUMtheresultmodule65536takes
+inverseplus1
+Forexample
+Whensendorreceivethedatasequence
+~1203400356ABCEFEFC72\R~isSOICRisEOI
+SothelastfivecharFC72\RFC72isCHKSUM
+Calculationmethod
+120FE31H32H30H46H45H038EH
+038EHmodule65536is038EH038EHtakeinverseplus1isFC72H
+2.5 DATA_INFOdata faomat
+Thisprotocalusethefixedpointdatatypetosendinformation.
+1intformatINTEGER2byte
+Signedint3276832767
+Unsignedint065535
+Highbyteissendfirst,andthelowbyteissendsecond
+5
+2unsignedcharCHAR1byte0255
+CharA.4Fixedpointdatatype
+OrdinalTelemetry contentData typeTransmission unit
+1
+Battery cell voltageUnsigned int
+mV
+2
+temperatureUnsigned int
+0.1K
+25.5=  25.5 * 10 + 2730 = 29850.1K
+-12.4=  -12.4 * 10 + 2730 = 26060.1K
+3
+Total battery voltageUnsigned int
+mV
+4
+Charge or discharge 
+currnet
+Signed int
+10mAthe charge current is positive,the discharge 
+current is negative
+5
+Battery pack capacityUnsigned int
+10mAHinclude the remain capacity,the 
+fullcapacity and designed capaticy
+2.6 data time
+DATA_TIMEand COMMAND_TIMEformat can see as the chart
+CharA.5Data time format
+itemsrangeData typeremark
+year099CHARone byte,decimal-format
+month112CHARone byte,decimal-format
+data131CHARone byte,decimal-format
+hour023CHARone byte,decimal-format
+minute059CHARone byte,decimal-format
+second059CHARone byte,decimal-format
+Remark:the year is transmitted by char-formatreal value = data + 2000The range is 2000-2099
+3code allocation
+3.1equipment type code allocation tableCID1
+CharA.6CID1table
+itemcontentCID1remark
+1Iron lithium battery46Hsuitable for 
+ternary lithium
+3.2command information cade allocation chartCID2
+CharA.7CID2table
+itemcontentCID2remark
+1Pack number90H
+6
+2Pack analog information42H
+3Pack warn information44H
+4Control command99H
+5Software veisionC1Hdefine
+6Product informationC2Hdefine
+7Charge MOSFETcontrol9AHdefine
+8Discharge MOSFETcontrol9BHdefine
+9Getting BMS data timeB1Hdefine
+10Setting BMSdata timeB2Hdefine
+11Pack capaticy informationA6Hdefine
+CharA.8CID2response informationRTN
+itemsymbolRTNremark
+1normal00H
+2undefine01H
+3CHKSUMerror02H
+4LCHKSUMerror03H
+5CID2undefine04H
+6Undefined 05H
+7Undefined 06H
+8Operation or write error09Hdefine
+4command explanation 
+4.1getting pack number
+CharA.9Getting pack number information
+Item 1 2 3 4 5 6 7 8 9
+Bytes 1 1 1 1 1 2 LENID/2 2 1
+Format SOI VER ADR 46H 90HLENGTH CHKSUM EOI
+Remark LENID = 00H
+For example,if the bms address is not equal to 1,the pack number responses the address as 1.if the bms 
+address is equal to 1,as the master-slave mode,pack number is up to practice.
+CharA.10Response information
+item1 2 3 4 5 6 7 8 9
+Bytes 1 1 1 1 1 2 LENID/2 2 1
+7
+Format SOI VER ADR 46HRTN LENGTH DATAINFO CHKSUM EOI
+Remark LENID=02HDATAINFOis the pack number information
+4.2getting pack analog information
+CharA.11Command information
+Item1 2 3 4 5 6 7 8 9
+Bytes 1 1 1 1 1 2 LENID/2 2 1
+Format SOI VER ADR 46H 42HLENGTH CHKSUM EOI
+Remark LENID = 02H
+INFOhas one byteas COMMAND
+COMMAND = FFHgetting all pack analog information
+COMMAND = 01Hgetting 1s pack analog information whos address is one
+COMMAND = 0FHgetting 15s pack analog information
+CharA.12Response information
+Item 1 2 3 4 5 6 7 8 9
+Bytes 1 1 1 1 1 2 LENID/2 2 1
+Format SOI VER ADR 46HRTN LENGTH DATAINFO CHKSUM EOI
+INFOFLAGis 00H or 01H
+CharA.13DATAIdata transmit order
+itemcontentDATAI bytesRemark
+1*PACKnumber M/COMMANDvalue1
+2PACK 1battery dataSee as chart A.14
+3
+M + 1PACK Mbattery dataSee as chart A.14
+When the command is FFH,the response information is pack number.otherwise ,the response information 
+is command value.
+CharA.14Analog content and transmit order
+itemcontentDATAI bytesRemark
+1Cell number M1
+2Cell voltage12
+3Cell voltage22
+4
+8
+M +1Cell voltageM2
+M +2Temperatures number N1
+M +3Temperature 12
+M +4Temperature 22
+M +5
+M +N + 2Temperature N2
+M +N + 3PACKcurrent2
+the charge current is 
+positive,the 
+discharge current 
+is negative 
+(uint:10mA\
+M +N + 4PACKtotal voltage2
+M +N + 5PACKremain capacity2uint10mAH
+M +N + 6Define number P=31
+M +N + 7PACKfull capacity2uint10mAH
+M +N + 8Cycle number2
+M +N + 9PACKdesign capacity2uint10mAH
+4.3getting warn information
+CharA.15Getting pack warn command information
+Item1 2 3 4 5 6 7 8 9
+Bytes 1 1 1 1 1 2 LENID/2 2 1
+Format SOI VER ADR 46H 44HLENGTH CHKSUM EOI
+Remark LENID = 02H
+INFOhas one byteas COMMAND
+COMMAND = FFHgetting all PACKwarn information
+COMMAND = 01Hgetting PACK1warn information
+COMMAND = 0FHgetting PACK15warn information
+Remark :as the master-slave mode,you can get more pack data information by the RS232 whos address must 
+be 1.otherwise,you can only get one pack information.the command can be 01H or FFH.
+CharA.16Getting pack warn command response information
+Item1 2 3 4 5 6 7 8 9
+bytes1 1 1 1 1 2 LENID/2 2 1
+Format SOI VER ADR 46HRTN LENGTH DATAINFO CHKSUM EOI
+Remark DATAINFOis consist of INFOFLAGand WARNSTATEWARNSTATEcan see at chart A.17
+9
+INFOFLAGcan be 00Hor 01H
+CharA.17Response DATAIdata transmittion order
+itemcontentDATAI bytesRemark 
+1*PACKnumber M/COMMANDvalue1
+2PACK 1warn informationSee at chart A.18
+3
+M + 1PACK Mwarn informationSee at chart A.18
+* when the command if FFH,the response information is pack number.otherwise that is command value.
+CharA.18One pack warn information and transmittion order
+itemcontentDATAI bytesRemark
+1Cell number M1
+2Cell voltage1warn1
+3Cell voltage2warn1
+4
+M +1Cell voltageMwarn1
+M +2Temperature number N1
+M +3Temperature1warn1
+M +4Temperature2warn1
+M +5
+M +N + 2TemperatureNwarn1
+M +N + 3PACKcharge current warn1
+M +N + 4PACKtotal voltage warn1
+M +N + 5PACKdischarge currentwarn1
+M +N + 6Protect state 11See at chart A.19
+M +N + 7Protect state21See at chartA.20
+M +N + 8Instructionsstate1See at chartA.21
+M +N + 9Control state1See at chartA.22
+M +N + 10Fault state1See at chartA.23
+M +N + 11Balancestate11Balance state for 1-8
+M +N + 12Balance state21Balance state for 9-16
+M +N + 13Warn state11See at chartA.24
+M +N + 14Warn state21See at chartA.25
+description
+12
+5 
+Discharge current warn1warn0normal
+4
+charge current warn1warn0normal
+3
+Lower tatal voltage warn1warn0normal
+2
+above tatal voltage warn1warn0normal
+1
+Lower cell voltage warn1warn0normal
+0 
+above cell voltage warn1warn0normal
+CharA.25Warn state2 explanation
+BITContent Remark 
+7 
+Low power warn1warn0normal
+6 
+High MOStemperature warn1warn0normal
+5 
+low envtemperature warn1warn0normal
+4
+high envtemperature warn1warn0normal
+3
+low dischargetemperature warn1warn0normal
+2
+low chargetemperature warn1warn0normal
+1
+above dischargetemperature warn1warn0normal
+0 
+above chargetemperature warn1warn0normal
+4.4control command
+CharA.26control command information
+Item1 2 3 4 5 6 7 8 9
+Bytes 1 1 1 1 1 2 LENID/2 21
+Format SOI VER ADR 46H 99HLENGTH CHKSUM EOI
+Remark LENID = 02H
+INFOhas one byteas COMMAND
+COMMAND = 06Henable LED warn function
+COMMAND = 07Hunenable LED warn function
+COMMAND = 08Hchoose high gear
+COMMAND = 09Hchoose low gear
+COMMAND = 0AHenable current limit function
+COMMAND = 0BHunenable current limit function
+COMMAND = 0CHunenable buzzer warn function
+COMMAND = 0DHenable buzzer warn function
+CharA.27response control command information
+13
+Item1 2 3 4 5 6 7 8 9
+bytes1 1 11 1 2 LENID/2 2 1
+Format SOI VER ADR 46HRTN LENGTH DATAINFOCHKSUM EOI
+Remark LENID=04H
+4.5software version information
+CharA.28getting software version information command
+Item 1 2 3 4 5 6 7 8 9
+Bytes 1 1 1 1 1 2 LENID/2 21
+Format SOI VER ADR 46H C1HLENGTH CHKSUM EOI
+Remark LENID = 00H
+CharA.29response information for version command
+Item 1 2 3 4 5 6 7 8 9
+bytes1 1 1 1 1 2 LENID/2 2 1
+Format SOI VER ADR 46HRTN LENGTH DATAINFOCHKSUM EOI
+Remark LENID=28H
+DATAINFOis consist of software versionincludes of 20charif not20char, you can set space
+4.6getting product information
+CharA.30getting  product information command
+Item 1 2 3 4 5 6 7 8 9
+bytes1 1 1 1 1 2 LENID/2 2 1
+Format SOI VER ADR 46H C2HLENGTH CHKSUM EOI
+Remark LENID = 00H
+CharA.31response for product information command
+Item 1 2 3 4 5 6 7 8 9
+bytes1 1 1 1 1 2 LENID/2 2 1
+Format SOI VER ADR 46HRTN LENGTH DATAINFO CHKSUM EOI
+Remark LENID=50Hor 28H
+4.7charge MOSFETcontrol
+CharA.32charge MOSFET command information
+Item 1 2 3 4 5 6 7 8 9
+bytes1 1 1 1 1 2 LENID/2 2 1
+Format SOI VER ADR 46H 9AHLENGTH CHKSUM EOI
+14
+Remark LENID = 02H
+INFOhas one byte as COMMAND
+COMMAND = 00Hopen charge MOSFET
+COMMAND = 01Hclose discharge MOSFET
+Remark :if discharge MOSFET is closed,the charge MOSFET cant be closed
+CharA.33response for charge MOSFET control command
+Item 1 2 3 4 5 6 7 8 9
+bytes1 1 1 1 1 2LENID/2 2 1
+Format SOI VER ADR 46HRTN LENGTH DATAINFO CHKSUM EOI
+Remark LENID=02H
+If RTN is 00Hthat means operation is success,otherwise failed
+4.8discharge MOSFET control
+CharA.34discharge MOSFET command information
+Item 1 2 3 4 5 6 7 8 9
+bytes1 1 1 1 1 2 LENID/2 2 1
+Format SOI VER ADR 46H 9BHLENGTH CHKSUM EOI
+Remark LENID = 02H
+INFOhas one byte as COMMAND
+COMMAND = 00Hopen discharge MOSFET
+COMMAND = 01Hclosedischarge MOSFET
+If charge MOSFET is closed,you cant operate the discharge MOSFE
+CharA.35response for discharge MOSFET control command
+Item 1 2 3 4 5 6 7 8 9
+Bytes 1 1 1 1 1 2 LENID/2 2 1
+format SOI VER ADR 46HRTN LENGTH DATAINFO CHKSUM EOI
+Remark LENID=02H
+If RTN is 00Hthat means operation is success,otherwise failed
+4.9getting BMS time and date
+CharA.36getting BMS time and date command information
+Item 1 2 3 4 5 6 7 8 9
+Bytes 1 1 1 1 1 2 LENID/2 2 1
+Format SOI VER ADR 46H B1HLENGTH CHKSUM EOI
+RemarkLENID = 00H
+15
+CharA.37response information for getting BMS time and date
+Item 1 2 3 4 5 6 7 8 9
+Bytes 1 1 1 1 1 2 LENID/2 2 1
+Format SOI VER ADR 46HRTN LENGTH DATAINFO CHKSUM EOI
+Remark LENID=0CH
+DATAINFOhas six bytesthat istime and date informationsee at chartA.38
+CharA.38DATAINFOcontent and transmission sequence
+Item contentDATAI bytesRemark 
+1Year1
+valuetransmist date
++ 2000
+2Month1
+3Date1
+4Hour1
+5Minute1
+6Second 1
+4.10setting BMS date and time
+CharA.39Setting BMS date and time command information
+Item 1 2 3 4 5 6 7 8 9
+Bytes 1 1 1 1 1 2 LENID/2 2 1
+Format SOI VER ADR 46H B2HLENGTH CHKSUM EOI
+Remark LENID = 0CH
+DATAINFOhas six bytesthat is time and date informationsee at chartA.40
+CharA.40Date and timeINFOcontent and transmission sequence
+Item Content DATAI bytes Remark 
+1Year1
+valuetransmist date
+-2000
+2Month1
+3Date1
+4Hour1
+5Minute1
+6Second 1
+CharA.41Response information for setting BMS date and time information
+Item 1 2 3 4 5 6 7 8 9
+16
+bytes1 1 1 1 1 2 LENID/2 2 1
+Format SOI VER ADR 46HRTN LENGTH DATAINFO CHKSUM EOI
+Remark LENID=00H
+4.11getting pack capacity
+CharA.42Getting pack capacity command information
+Item 1 2 3 4 5 6 7 8 9
+bytes1 1 1 1 1 2 LENID/2 2 1
+FormatSOI VER ADR 46H A6HLENGTH CHKSUM EOI
+Remark LENID = 00H
+CharA.43Response for getting pack capacity command information
+Item 1 2 3 4 5 6 7 8 9
+bytes1 1 1 1 1 2 LENID/2 2 1
+FormatSOI VER ADR 46HRTN LENGTH DATAINFO CHKSUM EOI
+Remark LENID=0CH
+DATAINFOhas six bytesthat is time and date informationsee at chartA.44
+CharA.44Capacity INFOcontent and transmission sequence
+Item Content DATAI bytes Remark 
+1PACKremaincapacity2unit10mAH
+2PACKfull capacity2unit10mAH
+3PACKdesign capacity2unit10mAH
+5example
+Whenweusethiscommunicationmode,theaddressisnotlimited.theBMSresponseinformationcanbethe
+BMSaddress.besidesCID2codeis42Hand44H,otherCIDcodeisusedforonlyoneBMSpack.forexample:
+Getting pack analog information
+7E 32 35 30 30 34 36 34 32 45 30 30 32 30 31 46 44 33 31 0D COMMAND = 01H
+7E 32 35 30 30 34 36 34 32 45 30 30 32 46 46 46 44 30 36 0D COMMAND = FFH
+Getting pack warn information
+7E 32 35 30 30 34 36 34 34 45 30 30 32 30 31 46 44 3246 0D COMMAND = 01H
+7E 32 35 30 30 34 36 34 34 45 30 30 32 46 46 46 44 30 34 0D COMMAND = FFH
+Response command information explanation
+Command information7E 32 35 30 30 34 36 34 32 45 30 30 32 46 46 46 44 30 36 0D
+Response information
+7E 32 35 30 30 34 36 3030 46 30 37 41 30 30 30 31 31 30 30 44 34 32 30 44 31 34 30 44 31 33 30 44 31 
+33 30 44 31 33 30 44 31 33 30 44 31 33 30 44 31 33 30 44 31 31 30 44 31 32 30 44 31 33 30 44 31 31 30 
