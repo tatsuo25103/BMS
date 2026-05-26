@@ -544,6 +544,13 @@ class BmsCollectorGui(tk.Tk):
         self.cell_chart.grid(row=2, column=0, sticky="nsew", pady=8)
         self.temp_chart = TimeSeriesChart(charts, title="Temperature Sensors", border_color=PURPLE, height=150)
         self.temp_chart.grid(row=3, column=0, sticky="nsew", pady=(8, 0))
+        tk.Label(
+            dashboard,
+            text="Programmed by Tatsuo",
+            background="#000000",
+            foreground="#6b7280",
+            font=("Segoe UI", 8),
+        ).place(relx=1.0, rely=1.0, anchor="se", x=-18, y=-4)
 
         self._build_cell_values_page(cells_page)
         self.temps_page = temps_page
