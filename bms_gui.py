@@ -14,7 +14,7 @@ import serial
 
 from jbd_hv_protocol import BmsSample
 
-from jbd_collector import (
+from bms_collector import (
     CsvLogger,
     DEFAULT_BAUD_RATES,
     JbdProtocolError,

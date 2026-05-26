@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from jbd_gui import BmsCollectorGui
+from bms_gui import BmsCollectorGui
 
 
 def main() -> None:

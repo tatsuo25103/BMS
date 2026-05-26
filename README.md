@@ -50,25 +50,25 @@ The current CSV file path is shown in the left status panel under `CSV File`.
 List ports:
 
 ```powershell
-python .\jbd_collector.py --list-ports
+python .\bms_collector.py --list-ports
 ```
 
 Scan:
 
 ```powershell
-python .\jbd_collector.py --scan
+python .\bms_collector.py --scan
 ```
 
 Run with a known port:
 
 ```powershell
-python .\jbd_collector.py --port COM4 --baud 9600 --csv .\bms_log.csv
+python .\bms_collector.py --port COM4 --baud 9600 --csv .\bms_log.csv
 ```
 
 ## Project Files
 
-- `jbd_gui.py`: GUI dashboard and charting
-- `jbd_collector.py`: CLI, CSV logging, scan helpers
+- `bms_gui.py`: GUI dashboard and charting
+- `bms_collector.py`: CLI, CSV logging, scan helpers
 - `main.py`: main GUI entry point
 - `jbd_hv_protocol.py`: JBD HV protocol implementation
 - `pace_rs232_protocol.py`: PACE RS232 protocol implementation
