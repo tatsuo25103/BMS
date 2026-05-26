@@ -10,6 +10,14 @@ env/
 demo_logs/
 log_write_test/
 
+# Build and release artifacts
+build/
+dist/
+release/
+*.spec
+packaging/installer_payload/
+packaging/*.abs.SED
+
 # Local extracts and temporary protocol text
 pdf_text_extract.txt
 pdf_text_compact.txt

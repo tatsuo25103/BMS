@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 import queue
 import shutil
+import sys
 import threading
 import time
 import tkinter as tk
@@ -557,7 +558,7 @@ class BmsCollectorGui(tk.Tk):
         self._build_temperature_values_page(temps_page)
 
     def _load_logo_image(self) -> tk.PhotoImage | None:
-        assets_dir = Path(__file__).with_name("assets")
+        assets_dir = app_resource_path("assets")
         logo_path = assets_dir / "mes_logo_light.png"
         if not logo_path.exists():
             logo_path = assets_dir / "mes_logo.png"
@@ -1888,6 +1889,12 @@ def infer_product_model_from_filename(path: Path) -> str:
         if model.upper() in name:
             return model
     return PRODUCT_HV140
+
+
+def app_resource_path(relative_path: str) -> Path:
+    # PyInstaller 單檔模式會把資源解壓到 _MEIPASS。
+    bundle_root = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
+    return bundle_root / relative_path
 
 
 def sorted_indexed_keys(row: dict[str, str], prefix: str, suffix: str) -> list[str]:
