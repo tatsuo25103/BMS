@@ -32,7 +32,7 @@ python -m pip install -r requirements.txt
 ## Run The GUI
 
 ```powershell
-python .\jbd_gui.py
+python .\main.py
 ```
 
 Typical workflow:
@@ -69,6 +69,7 @@ python .\jbd_collector.py --port COM4 --baud 9600 --csv .\bms_log.csv
 
 - `jbd_gui.py`: GUI dashboard and charting
 - `jbd_collector.py`: CLI, CSV logging, scan helpers
+- `main.py`: main GUI entry point
 - `jbd_hv_protocol.py`: JBD HV protocol implementation
 - `pace_rs232_protocol.py`: PACE RS232 protocol implementation
 - `assets/`: MES logo assets

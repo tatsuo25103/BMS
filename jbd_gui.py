@@ -31,8 +31,8 @@ from jbd_collector import (
 
 PRODUCT_MODELS = SUPPORTED_PRODUCT_MODELS
 PRODUCT_PROTOCOL_LABELS = {
-    PRODUCT_HV140: "JBD-HV",
-    PRODUCT_PS5120E: "PACE RS232",
+    PRODUCT_HV140: "JBD",
+    PRODUCT_PS5120E: "PACE",
 }
 PRODUCT_MODEL_MAX_PACKS = {
     PRODUCT_HV140: 14,
@@ -258,7 +258,7 @@ class BmsCollectorGui(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
 
-        self.title("JBD-HVBCUM01 BMS Collector")
+        self.title("BMS Data Collector")
         self.geometry("1180x720")
         self.minsize(1000, 620)
 

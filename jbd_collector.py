@@ -434,13 +434,13 @@ class CsvLogger:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Collect JBD-HVBCUM01 BMS data over RS485.")
+    parser = argparse.ArgumentParser(description="Collect BMS data over a Windows serial port.")
     parser.add_argument("--port", help="Windows COM port, for example COM4.")
     parser.add_argument("--list-ports", action="store_true", help="List serial ports and exit.")
     parser.add_argument(
         "--scan",
         action="store_true",
-        help="Scan COM ports and baud rates for a JBD BMS, then exit.",
+        help="Scan COM ports and baud rates for a supported BMS, then exit.",
     )
     parser.add_argument(
         "--auto",
@@ -527,7 +527,7 @@ def main() -> int:
         )
 
         if not results:
-            print("No JBD BMS response found.")
+            print("No supported BMS response found.")
             return 1
 
         print("Found:")
