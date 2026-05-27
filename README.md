@@ -31,6 +31,14 @@ The application scans serial ports, identifies the connected BMS model, reads li
 
 ## Setup
 
+Download the Windows installer:
+
+[BMSDataCollector_Setup.exe](https://github.com/tatsuo25103/BMS/releases/download/v1.0.0/BMSDataCollector_Setup.exe)
+
+Standalone executable:
+
+[BMSDataCollector.exe](https://github.com/tatsuo25103/BMS/releases/download/v1.0.0/BMSDataCollector.exe)
+
 Install Python 3.10 or newer, then install the dependency:
 
 ```powershell
