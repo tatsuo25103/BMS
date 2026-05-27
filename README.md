@@ -9,6 +9,11 @@ Supported models:
 - `HV140`: JBD high-voltage BMS over RS485
 - `PS5120E`: PACE RS232 BMS protocol
 
+Product BMS mapping:
+
+- `PS5120E`: uses the PACE `P16S100A` BMS
+- `HV140`: uses JBD `HVBCUM01 V1.1` and `BMU03-16S-6T V1.1` BMS hardware
+
 The application scans serial ports, identifies the connected BMS model, reads live pack data, plots trends, records CSV logs, and can reload previous logs for review.
 
 ## Features
