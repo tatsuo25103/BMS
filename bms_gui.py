@@ -7,6 +7,7 @@ import sys
 import threading
 import time
 import tkinter as tk
+import webbrowser
 from datetime import datetime
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
@@ -370,11 +371,23 @@ class BmsCollectorGui(tk.Tk):
         top.rowconfigure(0, weight=1)
 
         self.logo_image = self._load_logo_image()
-        logo_panel = tk.Frame(top, background=PANEL_BG, width=150, height=52)
+        logo_panel = tk.Frame(top, background=PANEL_BG, width=150, height=64)
         logo_panel.grid(row=0, column=0, sticky="nsew", padx=(10, 8), pady=8)
         logo_panel.grid_propagate(False)
         if self.logo_image is not None:
-            tk.Label(logo_panel, image=self.logo_image, background=PANEL_BG).place(relx=0.5, rely=0.5, anchor="center")
+            logo_label = tk.Label(logo_panel, image=self.logo_image, background=PANEL_BG, cursor="hand2")
+            logo_label.place(relx=0.5, rely=0.38, anchor="center")
+            logo_label.bind("<Button-1>", self._open_company_site)
+        site_label = tk.Label(
+            logo_panel,
+            text="MES-battery.de",
+            background=PANEL_BG,
+            foreground=MUTED_FG,
+            font=("Segoe UI", 8),
+            cursor="hand2",
+        )
+        site_label.place(relx=0.5, rely=0.82, anchor="center")
+        site_label.bind("<Button-1>", self._open_company_site)
 
         controls_panel = tk.Frame(top, background=PANEL_BG)
         controls_panel.grid(row=0, column=1, sticky="nsew", padx=(0, 12), pady=8)
@@ -569,9 +582,12 @@ class BmsCollectorGui(tk.Tk):
         except tk.TclError:
             return None
         width = max(image.width(), 1)
-        target_width = 115
+        target_width = 92
         subsample = max(1, round(width / target_width))
         return image.subsample(subsample, subsample)
+
+    def _open_company_site(self, _event: object | None = None) -> None:
+        webbrowser.open_new_tab("https://mes-battery.de")
 
     def _build_cell_values_page(self, parent: tk.Widget) -> None:
         parent.configure(background="#000000")
