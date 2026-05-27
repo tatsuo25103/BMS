@@ -80,7 +80,6 @@ python .\bms_collector.py --port COM4 --baud 9600 --csv .\bms_log.csv
 - `main.py`: main GUI entry point
 - `jbd_hv_protocol.py`: JBD HV protocol implementation
 - `pace_rs232_protocol.py`: PACE RS232 protocol implementation
-- `assets/`: MES logo assets
 - `docs/`: protocol notes and reference documents
 
 ## Notes
