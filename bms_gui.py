@@ -14,6 +14,7 @@ from tkinter import filedialog, messagebox, ttk
 
 import serial
 
+from app_version import APP_VERSION, fetch_latest_github_version, is_newer_version
 from jbd_hv_protocol import BmsSample
 
 from bms_collector import (
@@ -260,7 +261,7 @@ class BmsCollectorGui(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
 
-        self.title("BMS Data Collector")
+        self.title(f"BMS Data Collector V{APP_VERSION}")
         self.geometry("1180x720")
         self.minsize(1000, 620)
 
@@ -328,6 +329,7 @@ class BmsCollectorGui(tk.Tk):
         self._sync_interval_slider()
         self.refresh_ports()
         self.after(150, self._drain_events)
+        self.after(1000, self._start_update_check)
         self.after(500, self._monitor_link_health)
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
@@ -394,7 +396,12 @@ class BmsCollectorGui(tk.Tk):
         for column in range(14):
             controls_panel.columnconfigure(column, weight=1 if column in (2, 4, 7, 9, 11) else 0)
 
-        ttk.Label(controls_panel, text="Connection", style="Panel.TLabel", font=("Segoe UI", 12, "bold")).grid(
+        ttk.Label(
+            controls_panel,
+            text=f"Connection  V{APP_VERSION}",
+            style="Panel.TLabel",
+            font=("Segoe UI", 12, "bold"),
+        ).grid(
             row=0, column=0, sticky="w", padx=(0, 14), pady=(8, 8)
         )
         self._add_top_combo(controls_panel, 1, "Model", self.product_model_var, PRODUCT_MODELS)
@@ -588,6 +595,30 @@ class BmsCollectorGui(tk.Tk):
 
     def _open_company_site(self, _event: object | None = None) -> None:
         webbrowser.open_new_tab("https://mes-battery.de")
+
+    def _start_update_check(self) -> None:
+        thread = threading.Thread(target=self._check_for_update_worker, daemon=True)
+        thread.start()
+
+    def _check_for_update_worker(self) -> None:
+        try:
+            latest = fetch_latest_github_version()
+        except Exception:
+            return
+        if latest is None or not is_newer_version(latest.version):
+            return
+        try:
+            self.after(0, lambda: self._show_update_prompt(latest.version, latest.download_url))
+        except tk.TclError:
+            return
+
+    def _show_update_prompt(self, version: str, download_url: str) -> None:
+        should_open = messagebox.askyesno(
+            "Update available",
+            f"A newer version is available: {version}\n\nCurrent version: V{APP_VERSION}\n\nOpen the download page?",
+        )
+        if should_open:
+            webbrowser.open_new_tab(download_url)
 
     def _build_cell_values_page(self, parent: tk.Widget) -> None:
         parent.configure(background="#000000")

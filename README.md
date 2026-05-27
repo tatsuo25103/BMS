@@ -1,5 +1,7 @@
 # BMS Data Collector
 
+Current version: `V1.0.0`
+
 Windows GUI and CSV logger for battery management systems used in MES battery products.
 
 Supported models:
@@ -17,6 +19,7 @@ The application scans serial ports, identifies the connected BMS model, reads li
 - Event markers for start, stop, packet loss, warning, protect, and fault events
 - CSV logging with generated filenames containing date, time, product model, and serial number
 - CSV log loading for offline chart review
+- Startup update check against GitHub releases or tags
 - Multi-pack support:
   - HV140: up to 14 packs, with PDU temperature sensors
   - PS5120E: up to 30 packs, no PDU
