@@ -91,6 +91,3 @@ python .\bms_collector.py --port COM4 --baud 9600 --csv .\bms_log.csv
 - `docs/`: protocol notes and reference documents
 
 ## Notes
-
-- Runtime CSV logs, virtual environments, caches, and local test outputs are intentionally excluded from Git.
-- Source code comments are written in Traditional Chinese where comments are needed.
