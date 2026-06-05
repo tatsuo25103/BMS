@@ -22,16 +22,27 @@ CID2_WARN = 0x44
 CID2_SOFTWARE_VERSION = 0xC1
 CID2_PRODUCT_INFO = 0xC2
 CID2_CAPACITY = 0xA6
+CID2_PARAM_CELL_OV = 0xD1
+CID2_PARAM_CELL_UV = 0xD3
+CID2_PARAM_TOTAL_OV = 0xD5
+CID2_PARAM_TOTAL_UV = 0xD7
+CID2_PARAM_TEMP_HIGH = 0xDD
+CID2_PARAM_TEMP_LOW = 0xDF
+CID2_PARAM_TEMP_MIXED = 0xE7
 
-PS5120E_CELL_VOLTAGE_WARNING_LINES = [
-    (2500.0, "#ef4444", "PS5120E UV 2500 mV"),
-    (3650.0, "#ef4444", "PS5120E OV 3650 mV"),
+PS5120E_DEFAULT_TEMPERATURE_WARNING_LINES = [
+    (-20.0, "#3b82f6", "PS5120E default UT -20 C"),
+    (50.0, "#ff7a1a", "PS5120E default OT 50 C"),
+    (70.0, "#ef4444", "PS5120E default OT 70 C"),
 ]
-PS5120E_TOTAL_VOLTAGE_WARNING_LINES = [
-    (40.0, "#ef4444", "PS5120E UV 40.0 V"),
-    (58.4, "#ef4444", "PS5120E OV 58.4 V"),
+PS5120E_DEFAULT_CELL_VOLTAGE_WARNING_LINES = [
+    (2500.0, "#ef4444", "PS5120E default UV 2500 mV"),
+    (3650.0, "#ef4444", "PS5120E default OV 3650 mV"),
 ]
-
+PS5120E_DEFAULT_TOTAL_VOLTAGE_WARNING_LINES = [
+    (40.0, "#ef4444", "PS5120E default UV 40.0 V"),
+    (58.4, "#ef4444", "PS5120E default OV 58.4 V"),
+]
 
 class PaceProtocolError(Exception):
     pass
@@ -127,7 +138,7 @@ def read_frame(ser: serial.Serial, *, response_timeout: float) -> PaceFrame:
     except UnicodeDecodeError as exc:
         raise PaceProtocolError(f"PACE response is not ASCII: {raw.hex(' ')}") from exc
 
-    if len(text) < 18:
+    if len(text) < 16:
         raise PaceProtocolError(f"PACE response too short: {raw.hex(' ')}")
     if len(text) % 2:
         raise PaceProtocolError(f"PACE response has odd ASCII hex length: {text}")
@@ -229,6 +240,86 @@ def read_warn_info(
     frame = send_command(ser, CID2_WARN, b"\xFF", response_timeout=response_timeout)
     errors, balance_states = decode_warn_info(frame.info, max_packs=max_packs)
     return errors, balance_states, frame.raw.hex(" ")
+
+
+def read_threshold_settings(ser: serial.Serial, *, response_timeout: float) -> tuple[
+    list[tuple[float, str, str]],
+    list[tuple[float, str, str]],
+    list[tuple[float, str, str]],
+    str,
+]:
+    # PACE 公開 RS232 文件未列出參數讀取命令，這組 CID2 來自官方上位機 ParamsRead 按鈕。
+    raw_parts: list[str] = []
+
+    def read_param(command: int) -> bytes:
+        frame = send_command(ser, command, response_timeout=response_timeout, versions=(PACE_REQUEST_VERSION,))
+        raw_parts.append(f"0x{command:02X}={frame.info.hex().upper()}")
+        return frame.info
+
+    def u16_values(info: bytes) -> list[int]:
+        payload = info[1:] if info and info[0] in (0x00, 0x01) else info
+        if len(payload) % 2:
+            payload = payload[:-1]
+        return [int.from_bytes(payload[index : index + 2], "big") for index in range(0, len(payload), 2)]
+
+    def temp_c(raw_value: int) -> float:
+        return round(raw_value / 10.0 - 273.0, 1)
+
+    try:
+        cell_ov = u16_values(read_param(CID2_PARAM_CELL_OV))
+        cell_uv = u16_values(read_param(CID2_PARAM_CELL_UV))
+        total_ov = u16_values(read_param(CID2_PARAM_TOTAL_OV))
+        total_uv = u16_values(read_param(CID2_PARAM_TOTAL_UV))
+        temp_high = [temp_c(value) for value in u16_values(read_param(CID2_PARAM_TEMP_HIGH))]
+        temp_low = [temp_c(value) for value in u16_values(read_param(CID2_PARAM_TEMP_LOW))]
+        temp_mixed = [temp_c(value) for value in u16_values(read_param(CID2_PARAM_TEMP_MIXED))]
+    except (TimeoutError, PaceProtocolError, serial.SerialException) as exc:
+        return [], [], [], f"PACE threshold read failed: {exc}"
+
+    cell_lines: list[tuple[float, str, str]] = []
+    total_lines: list[tuple[float, str, str]] = []
+    temp_lines: list[tuple[float, str, str]] = []
+
+    if len(cell_uv) >= 2:
+        cell_lines.append((float(min(cell_uv[:2])), "#ef4444", f"PACE BMS UV min {min(cell_uv[:2])} mV"))
+    if len(cell_ov) >= 2:
+        cell_lines.append((float(min(cell_ov[:2])), "#ff7a1a", f"PACE BMS OV min {min(cell_ov[:2])} mV"))
+
+    if len(total_uv) >= 2:
+        uv_v = round(min(total_uv[:2]) / 1000.0, 3)
+        total_lines.append((uv_v, "#ef4444", f"PACE BMS UV min {uv_v:g} V"))
+    if len(total_ov) >= 2:
+        ov_v = round(min(total_ov[:2]) / 1000.0, 3)
+        total_lines.append((ov_v, "#ff7a1a", f"PACE BMS OV min {ov_v:g} V"))
+
+    over_temp_candidates = temp_high + [value for value in temp_mixed if value >= 30.0]
+    under_temp_candidates = temp_low + [value for value in temp_mixed if value <= 10.0]
+    if under_temp_candidates:
+        temp_lines.append((min(under_temp_candidates), "#3b82f6", f"PACE BMS UT low {min(under_temp_candidates):g} C"))
+        high_ut = max(under_temp_candidates)
+        if high_ut != min(under_temp_candidates):
+            temp_lines.append((high_ut, "#3b82f6", f"PACE BMS UT high {high_ut:g} C"))
+    if over_temp_candidates:
+        temp_lines.append((min(over_temp_candidates), "#ff7a1a", f"PACE BMS OT low {min(over_temp_candidates):g} C"))
+        high_ot = max(over_temp_candidates)
+        if high_ot != min(over_temp_candidates):
+            temp_lines.append((high_ot, "#ef4444", f"PACE BMS OT high {high_ot:g} C"))
+
+    raw_parts.append("source=PACE official ParamsRead")
+    return temp_lines, cell_lines, total_lines, "; ".join(raw_parts)
+
+
+def default_threshold_settings() -> tuple[
+    list[tuple[float, str, str]],
+    list[tuple[float, str, str]],
+    list[tuple[float, str, str]],
+]:
+    # PACE 文件未提供門檻讀取命令時，使用 PS5120E 既有預設值作為警示線。
+    return (
+        PS5120E_DEFAULT_TEMPERATURE_WARNING_LINES.copy(),
+        PS5120E_DEFAULT_CELL_VOLTAGE_WARNING_LINES.copy(),
+        PS5120E_DEFAULT_TOTAL_VOLTAGE_WARNING_LINES.copy(),
+    )
 
 
 def decode_warn_info(info: bytes, *, max_packs: int) -> tuple[list[str], list[int | None]]:
@@ -491,7 +582,25 @@ def poll_ps5120_bms(
         for sensor_index in range(1, PACE_TEMPS_PER_PACK + 1)
     ][: len(sample.temperatures_c)]
     sample.product_model = "PS5120E"
-    sample.cell_voltage_warning_lines = PS5120E_CELL_VOLTAGE_WARNING_LINES.copy()
-    sample.total_voltage_warning_lines_v = PS5120E_TOTAL_VOLTAGE_WARNING_LINES.copy()
+    (
+        sample.temperature_warning_lines,
+        sample.cell_voltage_warning_lines,
+        sample.total_voltage_warning_lines_v,
+        thresholds_raw,
+    ) = read_threshold_settings(ser, response_timeout=response_timeout)
+    sample.config_raw = thresholds_raw
+    if (
+        not sample.temperature_warning_lines
+        and not sample.cell_voltage_warning_lines
+        and not sample.total_voltage_warning_lines_v
+    ):
+        (
+            sample.temperature_warning_lines,
+            sample.cell_voltage_warning_lines,
+            sample.total_voltage_warning_lines_v,
+        ) = default_threshold_settings()
+        thresholds_raw = f"{thresholds_raw}; using PS5120E defaults"
+        sample.config_raw = thresholds_raw
+    raw_parts.append(f"thresholds={thresholds_raw}")
     sample.stats_raw = " | ".join(raw_parts)
     return sample

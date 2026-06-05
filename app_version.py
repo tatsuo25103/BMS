@@ -8,7 +8,7 @@ import urllib.error
 import urllib.request
 
 
-APP_VERSION = "1.0.0"
+APP_VERSION = "1.0.1"
 GITHUB_REPOSITORY = "tatsuo25103/BMS"
 GITHUB_RELEASES_URL = f"https://github.com/{GITHUB_REPOSITORY}/releases"
 UPDATE_CHECK_TIMEOUT_SECONDS = 2.0

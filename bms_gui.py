@@ -16,6 +16,7 @@ import serial
 
 from app_version import APP_VERSION, fetch_latest_github_version, is_newer_version
 from jbd_hv_protocol import BmsSample
+from pace_rs232_protocol import default_threshold_settings
 
 from bms_collector import (
     CsvLogger,
@@ -56,6 +57,10 @@ BLUE = "#4f46e5"
 CYAN = "#22d3ee"
 RED = "#ef4444"
 PURPLE = "#a855f7"
+VALUE_FONT = ("Consolas", 10)
+VALUE_FONT_BOLD = ("Consolas", 10, "bold")
+TEMP_VALUE_FONT = ("Consolas", 11)
+TEMP_VALUE_FONT_BOLD = ("Consolas", 11, "bold")
 CHART_LEFT_MARGIN = 54
 CHART_RIGHT_MARGIN = 54
 
@@ -393,35 +398,38 @@ class BmsCollectorGui(tk.Tk):
 
         controls_panel = tk.Frame(top, background=PANEL_BG)
         controls_panel.grid(row=0, column=1, sticky="nsew", padx=(0, 12), pady=8)
-        for column in range(14):
-            controls_panel.columnconfigure(column, weight=1 if column in (2, 4, 7, 9, 11) else 0)
+        controls_panel.columnconfigure(0, weight=1)
+        controls_panel.columnconfigure(1, weight=0)
+        controls_panel.rowconfigure(0, weight=0)
+        controls_panel.rowconfigure(1, weight=0)
 
-        ttk.Label(
-            controls_panel,
-            text=f"Connection  V{APP_VERSION}",
-            style="Panel.TLabel",
-            font=("Segoe UI", 12, "bold"),
-        ).grid(
-            row=0, column=0, sticky="w", padx=(0, 14), pady=(8, 8)
-        )
-        self._add_top_combo(controls_panel, 1, "Model", self.product_model_var, PRODUCT_MODELS)
-        self._add_top_combo(controls_panel, 3, "COM", self.port_var, [])
-        refresh = ttk.Button(controls_panel, text="Refresh", command=self.refresh_ports)
-        refresh.grid(row=0, column=5, sticky="ew", padx=4, pady=(8, 8))
+        settings = tk.Frame(controls_panel, background=PANEL_BG)
+        settings.grid(row=0, column=0, sticky="ew", padx=(0, 10), pady=(2, 6))
+        for column in range(6):
+            settings.columnconfigure(column, weight=1 if column in (0, 1, 3) else 0)
+
+        self._add_setting_combo(settings, 0, "Model", self.product_model_var, PRODUCT_MODELS, width=8)
+        self._add_setting_combo(settings, 1, "COM", self.port_var, [], width=9)
+        refresh_box = tk.Frame(settings, background=PANEL_BG)
+        refresh_box.grid(row=0, column=2, sticky="ew", padx=(4, 8))
+        ttk.Label(refresh_box, text=" ", style="PanelMuted.TLabel").grid(row=0, column=0, sticky="w")
+        refresh = ttk.Button(refresh_box, text="Refresh", command=self.refresh_ports, width=10)
+        refresh.grid(row=1, column=0, sticky="ew", pady=(2, 0))
         self.control_widgets.append(refresh)
-        self._add_top_combo(controls_panel, 6, "Baud", self.baud_var, DEFAULT_BAUD_RATES)
-        self.max_packs_spin = self._add_top_spin(
-            controls_panel,
-            8,
+        self._add_setting_combo(settings, 3, "Baud", self.baud_var, DEFAULT_BAUD_RATES, width=7)
+        self.max_packs_spin = self._add_setting_spin(
+            settings,
+            4,
             "Max Packs",
             self.max_packs_var,
             1,
             PRODUCT_MODEL_MAX_PACKS[self.product_model_var.get()],
+            width=6,
         )
-        self._add_top_spin(controls_panel, 10, "Timeout", self.timeout_var, 0.2, 30, increment=0.1)
+        self._add_setting_spin(settings, 5, "Timeout", self.timeout_var, 0.2, 30, increment=0.1, width=6)
 
         buttons = ttk.Frame(controls_panel, style="Panel.TFrame")
-        buttons.grid(row=0, column=12, columnspan=2, sticky="e", padx=(10, 0), pady=(8, 8))
+        buttons.grid(row=0, column=1, sticky="e", padx=(8, 0), pady=(18, 6))
         scan_btn = ttk.Button(buttons, text="Scan", command=self.scan)
         scan_btn.grid(row=0, column=0, padx=3)
         self.control_widgets.append(scan_btn)
@@ -439,21 +447,24 @@ class BmsCollectorGui(tk.Tk):
         reset_btn.grid(row=0, column=5, padx=3)
         self.control_widgets.append(reset_btn)
 
-        ttk.Label(controls_panel, text="Acquisition Rate", style="PanelMuted.TLabel").grid(
-            row=1, column=0, sticky="w", padx=(0, 8), pady=(2, 8)
+        acquisition = tk.Frame(controls_panel, background=PANEL_BG)
+        acquisition.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(0, 4))
+        acquisition.columnconfigure(1, weight=1)
+        ttk.Label(acquisition, text="Acquisition Rate", style="PanelMuted.TLabel", width=16).grid(
+            row=0, column=0, sticky="w", padx=(0, 8)
         )
         self.interval_scale = ttk.Scale(
-            controls_panel,
+            acquisition,
             from_=model_minimum_interval_seconds(self.product_model_var.get(), int(self.max_packs_var.get())),
             to=300,
             orient="horizontal",
             variable=self.interval_var,
             command=self._on_interval_changed,
         )
-        self.interval_scale.grid(row=1, column=1, columnspan=11, sticky="ew", padx=(0, 8), pady=(2, 8))
+        self.interval_scale.grid(row=0, column=1, sticky="ew", padx=(0, 10))
         self.control_widgets.append(self.interval_scale)
-        ttk.Label(controls_panel, textvariable=self.interval_label_var, style="Panel.TLabel", width=18).grid(
-            row=1, column=12, columnspan=2, sticky="e", padx=(10, 0), pady=(2, 8)
+        ttk.Label(acquisition, textvariable=self.interval_label_var, style="Panel.TLabel", width=18).grid(
+            row=0, column=2, sticky="e", padx=(8, 0)
         )
         self.max_packs_var.trace_add("write", lambda *_args: self._sync_interval_slider())
 
@@ -623,13 +634,22 @@ class BmsCollectorGui(tk.Tk):
     def _build_cell_values_page(self, parent: tk.Widget) -> None:
         parent.configure(background="#000000")
         parent.columnconfigure(0, weight=1)
-        parent.rowconfigure(0, weight=1)
+        parent.rowconfigure(0, weight=3)
+        parent.rowconfigure(1, weight=7)
+
+        self.cell_page_cell_chart = TimeSeriesChart(
+            parent,
+            title="Cell Voltage",
+            border_color=BLUE,
+            height=180,
+        )
+        self.cell_page_cell_chart.grid(row=0, column=0, columnspan=2, sticky="nsew", padx=8, pady=(8, 4))
 
         canvas = tk.Canvas(parent, background="#000000", highlightthickness=0)
         scrollbar = ttk.Scrollbar(parent, orient="vertical", command=canvas.yview)
         canvas.configure(yscrollcommand=scrollbar.set)
-        canvas.grid(row=0, column=0, sticky="nsew")
-        scrollbar.grid(row=0, column=1, sticky="ns")
+        canvas.grid(row=1, column=0, sticky="nsew")
+        scrollbar.grid(row=1, column=1, sticky="ns")
 
         content = tk.Frame(canvas, background="#000000")
         window_id = canvas.create_window((0, 0), window=content, anchor="nw")
@@ -676,7 +696,7 @@ class BmsCollectorGui(tk.Tk):
                     text=f"C{cell_index + 1:03d}\n--",
                     background="#111111",
                     foreground=MUTED_FG,
-                    font=("Consolas", 10, "bold"),
+                    font=VALUE_FONT,
                     justify="center",
                     width=12,
                     height=2,
@@ -699,13 +719,22 @@ class BmsCollectorGui(tk.Tk):
             child.destroy()
         parent.configure(background="#000000")
         parent.columnconfigure(0, weight=1)
-        parent.rowconfigure(0, weight=1)
+        parent.rowconfigure(0, weight=3)
+        parent.rowconfigure(1, weight=7)
+
+        self.temp_page_chart = TimeSeriesChart(
+            parent,
+            title="Temperature Sensors",
+            border_color=PURPLE,
+            height=180,
+        )
+        self.temp_page_chart.grid(row=0, column=0, columnspan=2, sticky="nsew", padx=8, pady=(8, 4))
 
         canvas = tk.Canvas(parent, background="#000000", highlightthickness=0)
         scrollbar = ttk.Scrollbar(parent, orient="vertical", command=canvas.yview)
         canvas.configure(yscrollcommand=scrollbar.set)
-        canvas.grid(row=0, column=0, sticky="nsew")
-        scrollbar.grid(row=0, column=1, sticky="ns")
+        canvas.grid(row=1, column=0, sticky="nsew")
+        scrollbar.grid(row=1, column=1, sticky="ns")
 
         content = tk.Frame(canvas, background="#000000")
         window_id = canvas.create_window((0, 0), window=content, anchor="nw")
@@ -728,6 +757,7 @@ class BmsCollectorGui(tk.Tk):
                 for pack_index in range(1, PRODUCT_MODEL_MAX_PACKS[PRODUCT_HV140] + 1)
             ]
         sensor_number = 1
+        pdu_spans_full_width = model == PRODUCT_HV140
         for group_index, (title, sensor_count) in enumerate(group_specs):
             group_frame = tk.Frame(
                 content,
@@ -735,9 +765,19 @@ class BmsCollectorGui(tk.Tk):
                 highlightthickness=2,
                 highlightbackground=PURPLE if group_index == 0 else "#333333",
             )
+            if pdu_spans_full_width and group_index == 0:
+                grid_row = 0
+                grid_column = 0
+                grid_columnspan = 2
+            else:
+                display_index = group_index - 1 if pdu_spans_full_width else group_index
+                grid_row = 1 + display_index // 2 if pdu_spans_full_width else display_index // 2
+                grid_column = display_index % 2
+                grid_columnspan = 1
             group_frame.grid(
-                row=group_index // 2,
-                column=group_index % 2,
+                row=grid_row,
+                column=grid_column,
+                columnspan=grid_columnspan,
                 sticky="nsew",
                 padx=8,
                 pady=8,
@@ -752,10 +792,11 @@ class BmsCollectorGui(tk.Tk):
                 font=("Segoe UI", 11, "bold"),
                 anchor="w",
             )
-            title_label.grid(row=0, column=0, columnspan=3, sticky="ew", padx=10, pady=(8, 4))
+            sensor_columns = 4 if pdu_spans_full_width and group_index == 0 else 3
+            title_label.grid(row=0, column=0, columnspan=sensor_columns, sticky="ew", padx=10, pady=(8, 4))
             self.temp_group_title_labels.append(title_label)
 
-            for column in range(3):
+            for column in range(sensor_columns):
                 group_frame.columnconfigure(column, weight=1, uniform=f"temp_group{group_index}")
 
             for group_sensor_index in range(sensor_count):
@@ -764,7 +805,7 @@ class BmsCollectorGui(tk.Tk):
                     text=f"{temperature_sensor_name(sensor_number, model=model)}\n--",
                     background="#111111",
                     foreground=MUTED_FG,
-                    font=("Consolas", 11, "bold"),
+                    font=TEMP_VALUE_FONT,
                     justify="center",
                     width=14,
                     height=2,
@@ -772,8 +813,8 @@ class BmsCollectorGui(tk.Tk):
                     bd=0,
                 )
                 label.grid(
-                    row=1 + group_sensor_index // 3,
-                    column=group_sensor_index % 3,
+                    row=1 + group_sensor_index // sensor_columns,
+                    column=group_sensor_index % sensor_columns,
                     sticky="nsew",
                     padx=6,
                     pady=6,
@@ -783,6 +824,83 @@ class BmsCollectorGui(tk.Tk):
 
         canvas.bind_all("<MouseWheel>", lambda event: canvas.yview_scroll(int(-1 * (event.delta / 120)), "units"))
 
+    def _add_setting_combo(
+        self,
+        parent: tk.Widget,
+        column: int,
+        label: str,
+        variable: tk.Variable,
+        values: list[int] | list[str],
+        *,
+        width: int,
+    ) -> ttk.Combobox:
+        box = tk.Frame(parent, background=PANEL_BG)
+        box.grid(row=0, column=column, sticky="ew", padx=(0, 8))
+        box.columnconfigure(0, weight=1)
+        ttk.Label(box, text=label, style="PanelMuted.TLabel").grid(row=0, column=0, sticky="w")
+        combo = ttk.Combobox(box, textvariable=variable, values=values, state="readonly", width=width)
+        combo.grid(row=1, column=0, sticky="ew", pady=(2, 0))
+        self.control_widgets.append(combo)
+        if label == "COM":
+            self.port_combo = combo
+        return combo
+
+    def _add_setting_spin(
+        self,
+        parent: tk.Widget,
+        column: int,
+        label: str,
+        variable: tk.Variable,
+        from_: float,
+        to: float,
+        *,
+        increment: float = 1.0,
+        width: int,
+    ) -> ttk.Spinbox:
+        box = tk.Frame(parent, background=PANEL_BG)
+        box.grid(row=0, column=column, sticky="ew", padx=(0, 8))
+        box.columnconfigure(0, weight=1)
+        ttk.Label(box, text=label, style="PanelMuted.TLabel").grid(row=0, column=0, sticky="w")
+        spin = ttk.Spinbox(box, from_=from_, to=to, increment=increment, textvariable=variable, width=width)
+        spin.grid(row=1, column=0, sticky="ew", pady=(2, 0))
+        self.control_widgets.append(spin)
+        return spin
+
+    def _group_gradient_color(self, value: float, group_values: list[float]) -> str:
+        if not group_values:
+            return TEXT_FG
+        low = min(group_values)
+        high = max(group_values)
+        if high == low:
+            return TEXT_FG
+        ratio = (value - low) / (high - low)
+        return blend_hex(BLUE, RED, ratio)
+
+    def _extreme_frame_color(
+        self,
+        group_indexes: set[int],
+        high_index: int | None,
+        low_index: int | None,
+        *,
+        active_color: str = "#4b5563",
+    ) -> str:
+        has_high = high_index is not None and high_index in group_indexes
+        has_low = low_index is not None and low_index in group_indexes
+        if has_high and has_low:
+            return PURPLE
+        if has_high:
+            return RED
+        if has_low:
+            return BLUE
+        return active_color
+
+    def _valid_values_by_index(self, values: list[float | int | None], start: int, end: int) -> dict[int, float]:
+        return {
+            index: float(values[index])
+            for index in range(start, min(end, len(values)))
+            if values[index] is not None
+        }
+
     def _add_top_combo(
         self,
         parent: tk.Widget,
@@ -791,7 +909,7 @@ class BmsCollectorGui(tk.Tk):
         variable: tk.Variable,
         values: list[int] | list[str],
     ) -> None:
-        ttk.Label(parent, text=label, style="PanelMuted.TLabel").grid(
+        ttk.Label(parent, text=label, style="PanelMuted.TLabel", width=max(len(label), 4)).grid(
             row=0, column=column, sticky="e", padx=(4, 4), pady=12
         )
         combo = ttk.Combobox(parent, textvariable=variable, values=values, state="readonly", width=12)
@@ -811,7 +929,7 @@ class BmsCollectorGui(tk.Tk):
         *,
         increment: float = 1.0,
     ) -> ttk.Spinbox:
-        ttk.Label(parent, text=label, style="PanelMuted.TLabel").grid(
+        ttk.Label(parent, text=label, style="PanelMuted.TLabel", width=max(len(label), 4)).grid(
             row=0, column=column, sticky="e", padx=(4, 4), pady=12
         )
         spin = ttk.Spinbox(parent, from_=from_, to=to, increment=increment, textvariable=variable, width=7)
@@ -1005,8 +1123,12 @@ class BmsCollectorGui(tk.Tk):
         self._set_link_health("idle")
         self.total_chart.set_series([])
         self.pack_chart.set_series([])
+        if hasattr(self, "cell_page_cell_chart"):
+            self.cell_page_cell_chart.set_series([])
         self.cell_chart.set_series([])
         self.temp_chart.set_series([])
+        if hasattr(self, "temp_page_chart"):
+            self.temp_page_chart.set_series([])
         self._clear_cell_values()
         self._clear_temperature_values()
 
@@ -1310,7 +1432,15 @@ class BmsCollectorGui(tk.Tk):
             self.value_vars["lowest_temp"].set("--")
         self.value_vars["timestamp"].set(sample.timestamp)
         self._set_errors(sample_error_codes(sample))
-        self.status_var.set(f"Last update {sample.timestamp}")
+        if (
+            getattr(sample, "product_model", None) == PRODUCT_PS5120E
+            and "using PS5120E defaults" in getattr(sample, "config_raw", "")
+        ):
+            self.status_var.set(
+                f"Last update {sample.timestamp}; using PS5120E default threshold lines"
+            )
+        else:
+            self.status_var.set(f"Last update {sample.timestamp}")
         self._update_charts()
         self._update_cell_values(sample)
         self._update_temperature_values(sample)
@@ -1495,7 +1625,6 @@ class BmsCollectorGui(tk.Tk):
             reference_lines=self._pack_voltage_reference_lines(samples),
             event_markers=self._pack_event_markers(samples),
         )
-
         max_cells = max((len(sample.cell_voltages_mv) for sample in samples), default=0)
         cell_series = []
         cell_colors = color_cycle(max_cells)
@@ -1513,6 +1642,13 @@ class BmsCollectorGui(tk.Tk):
             reference_lines=self._cell_voltage_reference_lines(samples),
             event_markers=self._cell_event_markers(samples),
         )
+        if hasattr(self, "cell_page_cell_chart"):
+            self.cell_page_cell_chart.set_series(
+                cell_series,
+                x_labels=x_labels,
+                reference_lines=self._cell_voltage_reference_lines(samples),
+                event_markers=self._cell_event_markers(samples),
+            )
 
         max_temps = max((len(sample.temperatures_c) for sample in samples), default=0)
         temp_series = []
@@ -1537,6 +1673,13 @@ class BmsCollectorGui(tk.Tk):
             reference_lines=self._temperature_reference_lines(samples),
             event_markers=self._temperature_event_markers(samples),
         )
+        if hasattr(self, "temp_page_chart"):
+            self.temp_page_chart.set_series(
+                temp_series,
+                x_labels=x_labels,
+                reference_lines=self._temperature_reference_lines(samples),
+                event_markers=self._temperature_event_markers(samples),
+            )
 
     def _chart_samples(self) -> list[object]:
         if self.running:
@@ -1548,6 +1691,8 @@ class BmsCollectorGui(tk.Tk):
             lines = getattr(sample, "temperature_warning_lines", None)
             if lines:
                 return compact_temperature_reference_lines(lines)
+        if samples and getattr(samples[-1], "product_model", None) == PRODUCT_PS5120E:
+            return []
         return [
             (-20.0, BLUE, "UT -20 C"),
             (50.0, ORANGE, "OT 50 C"),
@@ -1716,30 +1861,31 @@ class BmsCollectorGui(tk.Tk):
 
         for index, label in enumerate(self.cell_value_labels):
             cell_number = index + 1
+            pack_start = (index // 16) * 16
+            pack_values = list(self._valid_values_by_index(cells, pack_start, pack_start + 16).values())
             if index < read_count:
                 value = cells[index]
                 if value is None:
                     text = f"C{cell_number:03d}\nnot detected"
                     fg = RED
                     bg = "#1a0d0d"
+                    font = VALUE_FONT
                 else:
                     text = f"C{cell_number:03d}\n{value} mV"
-                    fg = TEXT_FG
+                    fg = self._group_gradient_color(float(value), pack_values)
                     bg = "#111111"
-                    if high_index == cell_number:
-                        fg = ORANGE
-                    elif low_index == cell_number:
-                        fg = CYAN
-                label.configure(text=text, foreground=fg, background=bg)
+                    font = VALUE_FONT_BOLD if cell_number in {high_index, low_index} else VALUE_FONT
+                label.configure(text=text, foreground=fg, background=bg, font=font)
             elif index < expected_count:
-                label.configure(text=f"C{cell_number:03d}\n--", foreground=MUTED_FG, background="#111111")
+                label.configure(text=f"C{cell_number:03d}\n--", foreground=MUTED_FG, background="#111111", font=VALUE_FONT)
             else:
-                label.configure(text=f"C{cell_number:03d}\n--", foreground="#4b5563", background="#0b0b0b")
+                label.configure(text=f"C{cell_number:03d}\n--", foreground="#4b5563", background="#0b0b0b", font=VALUE_FONT)
 
         for pack_index, frame in enumerate(self.pack_value_frames):
             pack_start = pack_index * 16
             if pack_start < expected_count:
-                frame.configure(highlightbackground="#4b5563")
+                group_indexes = set(range(pack_start + 1, min(pack_start + 17, expected_count + 1)))
+                frame.configure(highlightbackground=self._extreme_frame_color(group_indexes, high_index, low_index))
             else:
                 frame.configure(highlightbackground="#222222")
 
@@ -1755,51 +1901,56 @@ class BmsCollectorGui(tk.Tk):
             high_index, _high_temp = indexed_max(temperatures)
             low_index, _low_temp = indexed_min(temperatures)
 
+        product_model = getattr(sample, "product_model", self.product_model_var.get())
+        group_ranges: list[tuple[int, int]] = []
+        if product_model == PRODUCT_PS5120E:
+            for group_index in range(len(self.temp_value_frames)):
+                start = group_index * 6
+                group_ranges.append((start, start + 6))
+        else:
+            group_ranges.append((0, 4))
+            for group_index in range(1, len(self.temp_value_frames)):
+                start = 4 + (group_index - 1) * 6
+                group_ranges.append((start, start + 6))
+
         for index, label in enumerate(self.temp_value_labels):
             sensor_number = index + 1
             sensor_name = sample_temperature_sensor_name(sample, sensor_number)
+            group_start, group_end = next(
+                ((start, end) for start, end in group_ranges if start <= index < end),
+                (0, len(temperatures)),
+            )
+            group_values = list(self._valid_values_by_index(temperatures, group_start, group_end).values())
             if index >= len(temperatures):
                 fg = MUTED_FG if index < expected_count else "#4b5563"
                 bg = "#111111" if index < expected_count else "#0b0b0b"
-                label.configure(text=f"{sensor_name}\n--", foreground=fg, background=bg)
+                label.configure(text=f"{sensor_name}\n--", foreground=fg, background=bg, font=TEMP_VALUE_FONT)
                 continue
 
             temperature = temperatures[index]
-            fg = TEXT_FG
+            fg = self._group_gradient_color(float(temperature), group_values)
             bg = "#111111"
             if temperature <= -20:
-                fg = BLUE
                 bg = "#07111f"
             elif temperature >= 70:
-                fg = RED
                 bg = "#1a0d0d"
             elif temperature >= 50:
-                fg = ORANGE
                 bg = "#1a1208"
-            elif high_index == sensor_number:
-                fg = ORANGE
-            elif low_index == sensor_number:
-                fg = CYAN
 
-            label.configure(text=f"{sensor_name}\n{temperature:.1f} C", foreground=fg, background=bg)
+            font = TEMP_VALUE_FONT_BOLD if sensor_number in {high_index, low_index} else TEMP_VALUE_FONT
+            label.configure(text=f"{sensor_name}\n{temperature:.1f} C", foreground=fg, background=bg, font=font)
 
         for group_index, frame in enumerate(self.temp_value_frames):
-            if getattr(sample, "product_model", self.product_model_var.get()) == PRODUCT_PS5120E:
-                group_start = group_index * 6
-            else:
-                group_start = 0 if group_index == 0 else 4 + (group_index - 1) * 6
+            group_start, group_end = group_ranges[group_index] if group_index < len(group_ranges) else (0, 0)
             if group_start < expected_count:
-                frame.configure(
-                    highlightbackground=PURPLE
-                    if group_index == 0 and getattr(sample, "product_model", "") != PRODUCT_PS5120E
-                    else "#4b5563"
-                )
+                group_indexes = set(range(group_start + 1, min(group_end, expected_count) + 1))
+                frame.configure(highlightbackground=self._extreme_frame_color(group_indexes, high_index, low_index))
             else:
                 frame.configure(highlightbackground="#222222")
 
     def _clear_cell_values(self) -> None:
         for index, label in enumerate(self.cell_value_labels, start=1):
-            label.configure(text=f"C{index:03d}\n--", foreground="#4b5563", background="#0b0b0b")
+            label.configure(text=f"C{index:03d}\n--", foreground="#4b5563", background="#0b0b0b", font=VALUE_FONT)
         for frame in self.pack_value_frames:
             frame.configure(highlightbackground="#222222")
 
@@ -1810,6 +1961,7 @@ class BmsCollectorGui(tk.Tk):
                 text=f"{temperature_sensor_name(index, model=model)}\n--",
                 foreground="#4b5563",
                 background="#0b0b0b",
+                font=TEMP_VALUE_FONT,
             )
         for frame in self.temp_value_frames:
             frame.configure(highlightbackground="#222222")
@@ -1906,14 +2058,11 @@ def load_samples_from_csv(path: Path) -> list[BmsSample]:
             sample.ntc_count = sample.ntc_count or len(sample.temperatures_c)
             sample.total_cell_count = sample.total_cell_count or len(sample.cell_voltages_mv)
             if sample.product_model == PRODUCT_PS5120E:
-                sample.cell_voltage_warning_lines = [
-                    (2500.0, RED, "PS5120E UV 2500 mV"),
-                    (3650.0, RED, "PS5120E OV 3650 mV"),
-                ]
-                sample.total_voltage_warning_lines_v = [
-                    (40.0, RED, "PS5120E UV 40.0 V"),
-                    (58.4, RED, "PS5120E OV 58.4 V"),
-                ]
+                (
+                    sample.temperature_warning_lines,
+                    sample.cell_voltage_warning_lines,
+                    sample.total_voltage_warning_lines_v,
+                ) = default_threshold_settings()
                 pack_count = sample.configured_pack_count or 0
                 sample.temperature_sensor_names = [
                     f"P{pack_index:02d}-S{sensor_index:02d}"
@@ -2279,6 +2428,22 @@ def safe_int(value: object, default: int) -> int:
         return int(value)
     except (TypeError, ValueError, tk.TclError):
         return default
+
+
+def blend_hex(low_color: str, high_color: str, ratio: float) -> str:
+    ratio = max(0.0, min(1.0, ratio))
+    low_rgb = hex_to_rgb(low_color)
+    high_rgb = hex_to_rgb(high_color)
+    mixed = tuple(
+        round(low + (high - low) * ratio)
+        for low, high in zip(low_rgb, high_rgb)
+    )
+    return "#{:02x}{:02x}{:02x}".format(*mixed)
+
+
+def hex_to_rgb(color: str) -> tuple[int, int, int]:
+    value = color.lstrip("#")
+    return int(value[0:2], 16), int(value[2:4], 16), int(value[4:6], 16)
 
 
 def format_value(value: object, suffix: str) -> str:
