@@ -115,6 +115,12 @@ class InstallerTests(unittest.TestCase):
 
         self.assertFalse((self.root / "outside.txt").exists())
 
+    def test_process_stop_filter_does_not_match_command_line(self) -> None:
+        script = installer.build_stop_process_script(self.install_dir, 12345)
+        self.assertIn("$excludedProcessIds = @($PID, 12345)", script)
+        self.assertIn("$_.ExecutablePath.StartsWith($root", script)
+        self.assertNotIn("$_.CommandLine", script)
+
 
 if __name__ == "__main__":
     unittest.main()

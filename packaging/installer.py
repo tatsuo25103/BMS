@@ -117,18 +117,24 @@ def remove_tree_with_retry(path: Path, *, attempts: int = 5) -> None:
         raise last_error
 
 
-def stop_installed_processes(install_dir: Path) -> None:
+def build_stop_process_script(install_dir: Path, installer_pid: int) -> str:
     escaped = str(install_dir.resolve()).replace("'", "''")
-    script = f"""
+    return f"""
 $root = '{escaped}'
+$excludedProcessIds = @($PID, {installer_pid})
 $processes = Get-CimInstance Win32_Process | Where-Object {{
-    ($_.ExecutablePath -and $_.ExecutablePath.StartsWith($root, [StringComparison]::OrdinalIgnoreCase)) -or
-    ($_.CommandLine -and $_.CommandLine.IndexOf($root, [StringComparison]::OrdinalIgnoreCase) -ge 0)
+    $_.ExecutablePath -and
+    $_.ExecutablePath.StartsWith($root, [StringComparison]::OrdinalIgnoreCase) -and
+    $excludedProcessIds -notcontains $_.ProcessId
 }}
 foreach ($process in $processes) {{
     Stop-Process -Id $process.ProcessId -Force -ErrorAction SilentlyContinue
 }}
 """
+
+
+def stop_installed_processes(install_dir: Path) -> None:
+    script = build_stop_process_script(install_dir, os.getpid())
     run_powershell(script)
     time.sleep(0.5)
 
