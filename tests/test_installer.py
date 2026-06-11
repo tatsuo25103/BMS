@@ -27,6 +27,11 @@ def create_payload_zip(path: Path, *, prefix: str = "", version: str = "1.0.1") 
             archive.writestr(f"{prefix}{name}", data)
 
 
+def create_executable_payload_zip(path: Path, *, prefix: str = "") -> None:
+    with zipfile.ZipFile(path, "w") as archive:
+        archive.writestr(f"{prefix}BMSDataCollector.exe", b"executable")
+
+
 class InstallerTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temp_dir = tempfile.TemporaryDirectory(prefix="bms-installer-tests-")
@@ -57,6 +62,18 @@ class InstallerTests(unittest.TestCase):
         self.install_zip(zip_path)
         self.assertTrue((self.install_dir / "app/app_version.py").is_file())
         self.assertFalse((self.install_dir / "outer").exists())
+
+    def test_fresh_install_with_executable_payload(self) -> None:
+        zip_path = self.root / "executable.zip"
+        create_executable_payload_zip(zip_path, prefix="BMSDataCollector/")
+        target, launch_command = installer.install_portable(
+            zip_path,
+            self.install_dir,
+            stop_running=False,
+            create_links=False,
+        )
+        self.assertEqual(target, self.install_dir / "BMSDataCollector.exe")
+        self.assertEqual(launch_command, [str(target)])
 
     def test_update_replaces_old_install(self) -> None:
         old_zip = self.root / "old.zip"

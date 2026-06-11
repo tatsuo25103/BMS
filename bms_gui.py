@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import json
 import queue
 import shutil
 import sys
@@ -15,17 +16,22 @@ from tkinter import filedialog, messagebox, ttk
 import serial
 
 from app_version import APP_VERSION, fetch_latest_github_version, is_newer_version
-from jbd_hv_protocol import BmsSample
-from pace_rs232_protocol import default_threshold_settings
+from jbd_hv_protocol import BmsSample, read_bms_parameters as read_hv_bms_parameters
+from pace_rs232_protocol import default_threshold_settings, read_bms_parameters
 
 from bms_collector import (
+    CSV_STATIC_FIELDS,
     CsvLogger,
     DEFAULT_BAUD_RATES,
     JbdProtocolError,
     PRODUCT_HV140,
     PRODUCT_PS5120E,
     SUPPORTED_PRODUCT_MODELS,
+    apply_cached_static_data,
     available_ports,
+    battery_identity,
+    battery_identity_changed,
+    battery_identity_label,
     build_log_path,
     charge_discharge_state,
     poll_bms,
@@ -47,6 +53,16 @@ MAX_CELL_PACKS = max(PRODUCT_MODEL_MAX_PACKS.values())
 
 CHART_BG = "#050505"
 CHART_LIVE_SAMPLE_LIMIT = 3600
+CHART_FULL_SAMPLE_LIMIT = 12000
+CHART_LEGEND_LIMIT = 24
+ACQUISITION_RATE_OPTIONS = [
+    ("Real-time", 0.0),
+    ("10s", 10.0),
+    ("30s", 30.0),
+    ("1 min", 60.0),
+    ("5 min", 300.0),
+]
+DEFAULT_LOG_FOLDER_NAME = "BMS Data Collector Logs"
 PANEL_BG = "#0b0b0b"
 TEXT_FG = "#e6e6e6"
 MUTED_FG = "#9ca3af"
@@ -63,6 +79,97 @@ TEMP_VALUE_FONT = ("Consolas", 11)
 TEMP_VALUE_FONT_BOLD = ("Consolas", 11, "bold")
 CHART_LEFT_MARGIN = 54
 CHART_RIGHT_MARGIN = 54
+
+
+class StepScale(tk.Frame):
+    def __init__(
+        self,
+        master: tk.Widget,
+        *,
+        variable: tk.DoubleVar,
+        labels: list[str],
+        command: object | None = None,
+        width: int = 360,
+    ) -> None:
+        super().__init__(
+            master,
+            background=PANEL_BG,
+            width=width,
+            height=34,
+        )
+        self.grid_propagate(False)
+        self.variable = variable
+        self.labels = labels
+        self.command = command
+        self.buttons: list[tk.Radiobutton] = []
+        for index, label in enumerate(labels):
+            self.columnconfigure(index, weight=1, uniform="acquisition_rate")
+            button = tk.Radiobutton(
+                self,
+                text=label,
+                variable=self.variable,
+                value=float(index),
+                indicatoron=False,
+                command=lambda selected=index: self._select(selected),
+                background="#171717",
+                foreground=MUTED_FG,
+                activebackground="#243552",
+                activeforeground=TEXT_FG,
+                selectcolor="#243552",
+                disabledforeground="#5f6670",
+                relief="flat",
+                overrelief="flat",
+                borderwidth=0,
+                highlightthickness=1,
+                highlightbackground="#343a43",
+                highlightcolor="#60a5fa",
+                font=("Segoe UI", 9),
+                cursor="hand2",
+                padx=5,
+                pady=5,
+            )
+            button.grid(
+                row=0,
+                column=index,
+                sticky="nsew",
+                padx=(0 if index == 0 else 2, 0),
+            )
+            self.buttons.append(button)
+        self._variable_trace = self.variable.trace_add(
+            "write",
+            lambda *_args: self._refresh_styles(),
+        )
+        self._refresh_styles()
+
+    def _select(self, index: int) -> None:
+        self.variable.set(float(index))
+        if callable(self.command):
+            self.command(index)
+
+    def _refresh_styles(self) -> None:
+        selected = acquisition_rate_index(self.variable.get())
+        for index, button in enumerate(self.buttons):
+            active = index == selected
+            button.configure(
+                background="#27466f" if active else "#171717",
+                foreground="#ffffff" if active else MUTED_FG,
+                selectcolor="#27466f" if active else "#171717",
+                highlightbackground="#5b8fd5" if active else "#343a43",
+                font=("Segoe UI", 9, "bold" if active else "normal"),
+            )
+
+    def redraw(self) -> None:
+        self._refresh_styles()
+
+    def configure(self, cnf: object | None = None, **kwargs: object) -> object:
+        state = kwargs.pop("state", None)
+        result = super().configure(cnf, **kwargs)
+        if state is not None:
+            for button in self.buttons:
+                button.configure(state=state)
+        return result
+
+    config = configure
 
 
 class TimeSeriesChart(ttk.Frame):
@@ -173,22 +280,31 @@ class TimeSeriesChart(ttk.Frame):
             return
 
         legend_x = left + 10
-        for name, values, color, axis in self.series:
+        for series_index, (name, values, color, axis) in enumerate(self.series):
             points: list[tuple[float, float]] = []
             axis_min, axis_max = (right_min, right_max) if axis == "right" else (left_min, left_max)
-            for index, value in enumerate(values):
-                if value is None:
-                    continue
+            for index, value in chart_display_points(values, max_points=max(200, int(right - left))):
                 x = left + (right - left) * index / (max_len - 1)
                 y = bottom - (bottom - top) * (value - axis_min) / (axis_max - axis_min)
                 points.append((x, y))
-            for p1, p2 in zip(points, points[1:]):
-                canvas.create_line(p1[0], p1[1], p2[0], p2[1], fill=color, width=2)
+            if len(points) >= 2:
+                coordinates = [coordinate for point in points for coordinate in point]
+                canvas.create_line(*coordinates, fill=color, width=2)
             if points:
                 canvas.create_oval(points[-1][0] - 2, points[-1][1] - 2, points[-1][0] + 2, points[-1][1] + 2, fill=color, outline=color)
-            canvas.create_rectangle(legend_x, height - 18, legend_x + 10, height - 8, fill=color, outline=color)
-            canvas.create_text(legend_x + 14, height - 13, text=name, fill=TEXT_FG, anchor="w", font=("Segoe UI", 8))
-            legend_x += 78
+            if series_index < CHART_LEGEND_LIMIT:
+                canvas.create_rectangle(legend_x, height - 18, legend_x + 10, height - 8, fill=color, outline=color)
+                canvas.create_text(legend_x + 14, height - 13, text=name, fill=TEXT_FG, anchor="w", font=("Segoe UI", 8))
+                legend_x += 78
+        if len(self.series) > CHART_LEGEND_LIMIT:
+            canvas.create_text(
+                right,
+                height - 13,
+                text=f"+{len(self.series) - CHART_LEGEND_LIMIT} more",
+                fill=MUTED_FG,
+                anchor="e",
+                font=("Segoe UI", 8),
+            )
 
         self._draw_event_markers(canvas, left, right, top, bottom, max_len, left_min, left_max, right_min, right_max)
 
@@ -275,6 +391,7 @@ class BmsCollectorGui(tk.Tk):
         self.worker: threading.Thread | None = None
         self.running = False
         self.history: list[object] = []
+        self.history_start_index = 0
         self.record_events: list[tuple[int, str, str]] = []
         self.start_event_pending = False
         self.packet_ok_count = 0
@@ -298,11 +415,20 @@ class BmsCollectorGui(tk.Tk):
         self.product_model_var = tk.StringVar(value=PRODUCT_HV140)
         self.baud_var = tk.IntVar(value=9600)
         self.max_packs_var = tk.IntVar(value=14)
-        self.interval_var = tk.DoubleVar(value=model_minimum_interval_seconds(PRODUCT_HV140, 14))
+        self.interval_var = tk.DoubleVar(value=0.0)
         self.interval_label_var = tk.StringVar()
+        self.log_folder_var = tk.StringVar()
+        self.last_cycle_duration_seconds: float | None = None
         self.timeout_var = tk.DoubleVar(value=3.0)
-        self.csv_var = tk.StringVar(value=str(Path.home() / "Downloads" / "bms_log.csv"))
+        self.default_log_directory = Path.home() / "Documents" / DEFAULT_LOG_FOLDER_NAME
+        self.default_log_directory.mkdir(parents=True, exist_ok=True)
+        self.csv_var = tk.StringVar(value=str(self.default_log_directory / "bms_log.csv"))
+        self.log_folder_var.set(str(self.default_log_directory))
         self.current_log_path: Path | None = None
+        self.full_log_loading = False
+        self.scanned_static_sample: BmsSample | None = None
+        self.scanned_static_key: tuple[str, str, int] | None = None
+        self.last_battery_identity: tuple[str, str, str, int, int, int] | None = None
         self.status_var = tk.StringVar(value="Idle")
 
         self.value_vars = {
@@ -331,6 +457,7 @@ class BmsCollectorGui(tk.Tk):
 
         self._build_ui()
         self.product_model_var.trace_add("write", lambda *_args: self._on_product_model_changed())
+        self.csv_var.trace_add("write", lambda *_args: self._update_log_folder_label())
         self._sync_interval_slider()
         self.refresh_ports()
         self.after(150, self._drain_events)
@@ -371,19 +498,24 @@ class BmsCollectorGui(tk.Tk):
         temps_page.rowconfigure(0, weight=1)
         self.notebook.add(temps_page, text="Temperature Sensors")
 
+        parameters_page = tk.Frame(self.notebook, background="#000000")
+        parameters_page.columnconfigure(0, weight=1)
+        parameters_page.rowconfigure(0, weight=1)
+        self.notebook.add(parameters_page, text="BMS Parameters")
+
         top = tk.Frame(dashboard, background=PANEL_BG, highlightthickness=3, highlightbackground="#8a8a8a")
         top.grid(row=0, column=0, columnspan=2, sticky="ew", padx=14, pady=(14, 8))
-        top.columnconfigure(0, minsize=150, weight=0)
+        top.columnconfigure(0, minsize=140, weight=0)
         top.columnconfigure(1, weight=1)
         top.rowconfigure(0, weight=1)
 
         self.logo_image = self._load_logo_image()
-        logo_panel = tk.Frame(top, background=PANEL_BG, width=150, height=64)
-        logo_panel.grid(row=0, column=0, sticky="nsew", padx=(10, 8), pady=8)
+        logo_panel = tk.Frame(top, background=PANEL_BG, width=140, height=58)
+        logo_panel.grid(row=0, column=0, sticky="nsew", padx=(8, 6), pady=5)
         logo_panel.grid_propagate(False)
         if self.logo_image is not None:
             logo_label = tk.Label(logo_panel, image=self.logo_image, background=PANEL_BG, cursor="hand2")
-            logo_label.place(relx=0.5, rely=0.38, anchor="center")
+            logo_label.place(relx=0.5, rely=0.36, anchor="center")
             logo_label.bind("<Button-1>", self._open_company_site)
         site_label = tk.Label(
             logo_panel,
@@ -393,18 +525,18 @@ class BmsCollectorGui(tk.Tk):
             font=("Segoe UI", 8),
             cursor="hand2",
         )
-        site_label.place(relx=0.5, rely=0.82, anchor="center")
+        site_label.place(relx=0.5, rely=0.84, anchor="center")
         site_label.bind("<Button-1>", self._open_company_site)
 
         controls_panel = tk.Frame(top, background=PANEL_BG)
-        controls_panel.grid(row=0, column=1, sticky="nsew", padx=(0, 12), pady=8)
+        controls_panel.grid(row=0, column=1, sticky="nsew", padx=(0, 10), pady=5)
         controls_panel.columnconfigure(0, weight=1)
         controls_panel.columnconfigure(1, weight=0)
         controls_panel.rowconfigure(0, weight=0)
         controls_panel.rowconfigure(1, weight=0)
 
         settings = tk.Frame(controls_panel, background=PANEL_BG)
-        settings.grid(row=0, column=0, sticky="ew", padx=(0, 10), pady=(2, 6))
+        settings.grid(row=0, column=0, sticky="ew", padx=(0, 8), pady=(0, 4))
         for column in range(6):
             settings.columnconfigure(column, weight=1 if column in (0, 1, 3) else 0)
 
@@ -429,7 +561,7 @@ class BmsCollectorGui(tk.Tk):
         self._add_setting_spin(settings, 5, "Timeout", self.timeout_var, 0.2, 30, increment=0.1, width=6)
 
         buttons = ttk.Frame(controls_panel, style="Panel.TFrame")
-        buttons.grid(row=0, column=1, sticky="e", padx=(8, 0), pady=(18, 6))
+        buttons.grid(row=0, column=1, sticky="e", padx=(6, 0), pady=(14, 4))
         scan_btn = ttk.Button(buttons, text="Scan", command=self.scan)
         scan_btn.grid(row=0, column=0, padx=3)
         self.control_widgets.append(scan_btn)
@@ -448,25 +580,55 @@ class BmsCollectorGui(tk.Tk):
         self.control_widgets.append(reset_btn)
 
         acquisition = tk.Frame(controls_panel, background=PANEL_BG)
-        acquisition.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(0, 4))
-        acquisition.columnconfigure(1, weight=1)
-        ttk.Label(acquisition, text="Acquisition Rate", style="PanelMuted.TLabel", width=16).grid(
-            row=0, column=0, sticky="w", padx=(0, 8)
+        acquisition.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(1, 0))
+        acquisition.columnconfigure(1, weight=0)
+        acquisition.columnconfigure(5, weight=1)
+        ttk.Label(acquisition, text="Acquisition Rate", style="PanelMuted.TLabel", width=14).grid(
+            row=0, column=0, sticky="w", padx=(0, 6)
         )
-        self.interval_scale = ttk.Scale(
+        self.interval_scale = StepScale(
             acquisition,
-            from_=model_minimum_interval_seconds(self.product_model_var.get(), int(self.max_packs_var.get())),
-            to=300,
-            orient="horizontal",
             variable=self.interval_var,
+            labels=[label for label, _seconds in ACQUISITION_RATE_OPTIONS],
             command=self._on_interval_changed,
+            width=335,
         )
-        self.interval_scale.grid(row=0, column=1, sticky="ew", padx=(0, 10))
+        self.interval_scale.grid(row=0, column=1, sticky="w", padx=(0, 12))
         self.control_widgets.append(self.interval_scale)
-        ttk.Label(acquisition, textvariable=self.interval_label_var, style="Panel.TLabel", width=18).grid(
-            row=0, column=2, sticky="e", padx=(8, 0)
+        ttk.Separator(acquisition, orient="vertical").grid(
+            row=0,
+            column=2,
+            sticky="ns",
+            padx=(0, 12),
+            pady=3,
         )
-        self.max_packs_var.trace_add("write", lambda *_args: self._sync_interval_slider())
+        ttk.Label(
+            acquisition,
+            text="Last Cycle",
+            style="PanelMuted.TLabel",
+        ).grid(row=0, column=3, sticky="e", padx=(0, 6))
+        ttk.Label(
+            acquisition,
+            textvariable=self.interval_label_var,
+            style="Panel.TLabel",
+            width=8,
+            anchor="w",
+        ).grid(row=0, column=4, sticky="w", padx=(0, 14))
+        save_info = tk.Frame(acquisition, background=PANEL_BG)
+        save_info.grid(row=0, column=5, sticky="ew")
+        save_info.columnconfigure(1, weight=1)
+        ttk.Label(
+            save_info,
+            text="Save Folder",
+            style="PanelMuted.TLabel",
+        ).grid(row=0, column=0, sticky="w", padx=(0, 6))
+        ttk.Label(
+            save_info,
+            textvariable=self.log_folder_var,
+            style="Panel.TLabel",
+            anchor="w",
+            width=36,
+        ).grid(row=0, column=1, sticky="ew")
 
         left = tk.Frame(dashboard, background=PANEL_BG, highlightthickness=3, highlightbackground="#8a8a8a")
         left.grid(row=1, column=0, sticky="nsew", padx=(14, 8), pady=(8, 14))
@@ -587,6 +749,8 @@ class BmsCollectorGui(tk.Tk):
         self._build_cell_values_page(cells_page)
         self.temps_page = temps_page
         self._build_temperature_values_page(temps_page)
+        self.parameters_page = parameters_page
+        self._build_parameters_page(parameters_page)
 
     def _load_logo_image(self) -> tk.PhotoImage | None:
         assets_dir = app_resource_path("assets")
@@ -713,6 +877,210 @@ class BmsCollectorGui(tk.Tk):
                 self.cell_value_labels.append(label)
 
         canvas.bind_all("<MouseWheel>", lambda event: canvas.yview_scroll(int(-1 * (event.delta / 120)), "units"))
+
+    def _build_parameters_page(self, parent: tk.Widget) -> None:
+        for child in parent.winfo_children():
+            child.destroy()
+        parent.configure(background="#000000")
+        parent.columnconfigure(0, weight=1)
+        parent.rowconfigure(0, weight=0)
+        parent.rowconfigure(1, weight=1)
+
+        header = tk.Frame(parent, background=PANEL_BG, highlightthickness=2, highlightbackground="#555555")
+        header.grid(row=0, column=0, sticky="ew", padx=8, pady=(8, 4))
+        header.columnconfigure(0, weight=1)
+        header.columnconfigure(1, weight=0)
+        self.parameter_title_var = tk.StringVar(value="BMS Parameters")
+        tk.Label(
+            header,
+            textvariable=self.parameter_title_var,
+            background=PANEL_BG,
+            foreground=TEXT_FG,
+            font=("Segoe UI", 11, "bold"),
+            anchor="w",
+        ).grid(row=0, column=0, sticky="w", padx=(12, 8), pady=8)
+        self.parameter_status_var = tk.StringVar(value="Run Scan to read BMS parameter settings.")
+        tk.Label(
+            header,
+            textvariable=self.parameter_status_var,
+            background=PANEL_BG,
+            foreground=MUTED_FG,
+            font=("Segoe UI", 9),
+            anchor="e",
+        ).grid(row=0, column=1, sticky="e", padx=(8, 12), pady=8)
+
+        self.parameter_canvas = tk.Canvas(parent, background="#000000", highlightthickness=0)
+        scrollbar = ttk.Scrollbar(parent, orient="vertical", command=self.parameter_canvas.yview)
+        self.parameter_canvas.configure(yscrollcommand=scrollbar.set)
+        self.parameter_canvas.grid(row=1, column=0, sticky="nsew", padx=(8, 0), pady=(0, 8))
+        scrollbar.grid(row=1, column=1, sticky="ns", padx=(0, 8), pady=(4, 8))
+
+        self.parameter_content = tk.Frame(self.parameter_canvas, background="#000000")
+        self.parameter_window_id = self.parameter_canvas.create_window(
+            (0, 0),
+            window=self.parameter_content,
+            anchor="nw",
+        )
+        self.parameter_groups_data: list[tuple[str, list[dict[str, str]]]] = []
+        self.parameter_column_count = 0
+        self.parameter_content.bind(
+            "<Configure>",
+            lambda _event: self.parameter_canvas.configure(
+                scrollregion=self.parameter_canvas.bbox("all")
+            ),
+        )
+        self.parameter_canvas.bind(
+            "<Configure>",
+            self._on_parameter_canvas_configure,
+        )
+        self.parameter_canvas.bind(
+            "<MouseWheel>",
+            lambda event: self.parameter_canvas.yview_scroll(
+                int(-1 * (event.delta / 120)),
+                "units",
+            ),
+        )
+        self._show_bms_parameters(None)
+
+    def _on_parameter_canvas_configure(self, event: tk.Event) -> None:
+        self.parameter_canvas.itemconfigure(self.parameter_window_id, width=event.width)
+        self._layout_parameter_groups(event.width)
+
+    @staticmethod
+    def _parameter_columns_for_width(width: int) -> int:
+        if width >= 1320:
+            return 4
+        if width >= 960:
+            return 3
+        if width >= 620:
+            return 2
+        return 1
+
+    def _layout_parameter_groups(self, width: int | None = None, *, force: bool = False) -> None:
+        if not hasattr(self, "parameter_content"):
+            return
+        available_width = width or self.parameter_canvas.winfo_width()
+        column_count = self._parameter_columns_for_width(max(available_width, 1))
+        if not force and column_count == self.parameter_column_count:
+            return
+        self.parameter_column_count = column_count
+        self._render_parameter_groups(column_count)
+
+    def _render_parameter_groups(self, column_count: int) -> None:
+        for child in self.parameter_content.winfo_children():
+            child.destroy()
+        for column in range(4):
+            self.parameter_content.columnconfigure(column, weight=0, uniform="")
+
+        if not self.parameter_groups_data:
+            tk.Label(
+                self.parameter_content,
+                text="No parameter data",
+                background="#000000",
+                foreground=MUTED_FG,
+                font=("Segoe UI", 11),
+            ).grid(row=0, column=0, padx=16, pady=24, sticky="nw")
+            return
+
+        columns: list[tk.Frame] = []
+        column_heights = [0] * column_count
+        for column in range(column_count):
+            self.parameter_content.columnconfigure(
+                column,
+                weight=1,
+                uniform="parameter_columns",
+            )
+            container = tk.Frame(self.parameter_content, background="#000000")
+            container.grid(row=0, column=column, sticky="new", padx=4)
+            container.columnconfigure(0, weight=1)
+            columns.append(container)
+
+        for group_name, items in self.parameter_groups_data:
+            target_column = min(range(column_count), key=column_heights.__getitem__)
+            container = columns[target_column]
+            group_frame = tk.Frame(
+                container,
+                background=PANEL_BG,
+                highlightthickness=2,
+                highlightbackground="#3f3f46",
+            )
+            group_frame.grid(
+                row=column_heights[target_column],
+                column=0,
+                sticky="ew",
+                padx=2,
+                pady=4,
+            )
+            column_heights[target_column] += max(len(items) + 2, 4)
+            group_frame.columnconfigure(0, weight=1)
+            group_frame.columnconfigure(1, weight=0)
+            tk.Label(
+                group_frame,
+                text=group_name,
+                background=PANEL_BG,
+                foreground=TEXT_FG,
+                font=("Segoe UI", 10, "bold"),
+                anchor="w",
+            ).grid(row=0, column=0, columnspan=2, sticky="ew", padx=10, pady=(7, 4))
+
+            for row_index, item in enumerate(items, start=1):
+                is_ok = item.get("status") == "ok"
+                tk.Label(
+                    group_frame,
+                    text=item.get("name", ""),
+                    background=PANEL_BG,
+                    foreground=MUTED_FG if is_ok else RED,
+                    font=("Segoe UI", 8),
+                    anchor="w",
+                    justify="left",
+                    wraplength=190,
+                ).grid(row=row_index, column=0, sticky="ew", padx=(10, 6), pady=2)
+                value_text = item.get("value", "--")
+                unit = item.get("unit", "")
+                tk.Label(
+                    group_frame,
+                    text=f"{value_text} {unit}".strip(),
+                    background="#151515",
+                    foreground=TEXT_FG if is_ok else RED,
+                    font=("Consolas", 9, "bold"),
+                    width=12,
+                    anchor="e",
+                ).grid(row=row_index, column=1, sticky="e", padx=(4, 10), pady=2)
+
+    def _show_bms_parameters(self, sample: object | None) -> None:
+        if not hasattr(self, "parameter_content"):
+            return
+
+        model = getattr(sample, "product_model", self.product_model_var.get())
+        self.parameter_title_var.set(f"{model} BMS Parameters")
+        parameters = list(getattr(sample, "bms_parameters", []) or [])
+        errors = list(getattr(sample, "bms_parameter_errors", []) or [])
+        if not parameters:
+            self.parameter_status_var.set(f"Run Scan to read the connected {model} parameter settings.")
+        else:
+            ok_count = sum(1 for item in parameters if item.get("status") == "ok")
+            unavailable_count = sum(
+                1
+                for item in parameters
+                if str(item.get("status", "")).startswith("Unavailable:")
+            )
+            self.parameter_status_var.set(
+                f"Read {ok_count} of {len(parameters)} parameters"
+                + (f"; {len(errors)} register(s) failed" if errors else "")
+                + (
+                    f"; {unavailable_count} unavailable in protocol"
+                    if unavailable_count
+                    else ""
+                )
+            )
+
+        grouped_parameters: dict[str, list[dict[str, str]]] = {}
+        for item in parameters:
+            group_name = item.get("group", "Other")
+            grouped_parameters.setdefault(group_name, []).append(item)
+        self.parameter_groups_data = list(grouped_parameters.items())
+        self._layout_parameter_groups(force=True)
+        self.parameter_canvas.yview_moveto(0.0)
 
     def _build_temperature_values_page(self, parent: tk.Widget) -> None:
         for child in parent.winfo_children():
@@ -938,29 +1306,29 @@ class BmsCollectorGui(tk.Tk):
         return spin
 
     def _sync_interval_slider(self) -> None:
-        try:
-            max_packs = int(self.max_packs_var.get())
-        except (tk.TclError, ValueError):
-            return
-        minimum = model_minimum_interval_seconds(self.product_model_var.get(), max_packs)
         if hasattr(self, "interval_scale"):
-            self.interval_scale.configure(from_=minimum, to=300)
-        if self.interval_var.get() < minimum:
-            self.interval_var.set(float(minimum))
+            self.interval_scale.redraw()
         self._on_interval_changed()
 
     def _on_interval_changed(self, _value: object | None = None) -> None:
         try:
-            seconds = int(float(self.interval_var.get()) + 0.999)
+            rate_index = acquisition_rate_index(self.interval_var.get())
         except (tk.TclError, ValueError):
             return
-        if seconds != int(self.interval_var.get()):
-            self.interval_var.set(float(seconds))
-        minimum = model_minimum_interval_seconds(
-            self.product_model_var.get(),
-            safe_int(self.max_packs_var.get(), PRODUCT_MODEL_MAX_PACKS[self.product_model_var.get()]),
-        )
-        self.interval_label_var.set(f"{format_duration(seconds)}  min {minimum}s")
+        if float(self.interval_var.get()) != float(rate_index):
+            self.interval_var.set(float(rate_index))
+        if self.last_cycle_duration_seconds is None:
+            self.interval_label_var.set("--")
+        else:
+            self.interval_label_var.set(f"{self.last_cycle_duration_seconds:.1f}s")
+
+    def _update_log_folder_label(self) -> None:
+        try:
+            path = Path(self.csv_var.get())
+        except (tk.TclError, TypeError, ValueError):
+            return
+        folder = path if path.suffix == "" else path.parent
+        self.log_folder_var.set(str(folder))
 
     def _add_combo(self, parent: tk.Widget, row: int, label: str, variable: tk.Variable, values: list[int] | list[str]) -> int:
         ttk.Label(parent, text=label, style="PanelMuted.TLabel").grid(row=row, column=0, sticky="w", padx=12, pady=(6, 0))
@@ -1010,7 +1378,12 @@ class BmsCollectorGui(tk.Tk):
         if current > max_allowed or current == PRODUCT_MODEL_MAX_PACKS.get(PRODUCT_HV140):
             self.max_packs_var.set(max_allowed)
         self.history.clear()
+        self.history_start_index = 0
+        self.scanned_static_sample = None
+        self.scanned_static_key = None
+        self.last_battery_identity = None
         self._build_temperature_values_page(self.temps_page)
+        self._show_bms_parameters(None)
         self._sync_interval_slider()
         protocol = PRODUCT_PROTOCOL_LABELS.get(model, "unknown")
         self.status_var.set(f"Model: {model} ({protocol})")
@@ -1045,6 +1418,7 @@ class BmsCollectorGui(tk.Tk):
             title="Select CSV log location",
             defaultextension=".csv",
             filetypes=(("CSV files", "*.csv"), ("All files", "*.*")),
+            initialdir=str(Path(self.csv_var.get()).parent or self.default_log_directory),
             initialfile=Path(self.csv_var.get()).name or "bms_log.csv",
         )
         if filename:
@@ -1064,7 +1438,10 @@ class BmsCollectorGui(tk.Tk):
         if not filename:
             return
         try:
-            samples = load_samples_from_csv(Path(filename))
+            samples = load_samples_from_csv(
+                Path(filename),
+                max_samples=CHART_FULL_SAMPLE_LIMIT,
+            )
         except Exception as exc:
             messagebox.showerror("Load Log", f"Could not load CSV:\n{exc}")
             return
@@ -1076,11 +1453,18 @@ class BmsCollectorGui(tk.Tk):
         if product_model in PRODUCT_MODELS:
             self.product_model_var.set(product_model)
         self.history = samples
+        self.history_start_index = 0
         self.current_log_path = Path(filename)
         self.value_vars["csv_file"].set(filename)
         self.record_events = [(0, "START", GREEN)]
+        self.record_events.extend(
+            (index, "BATTERY CHANGED", RED)
+            for index, sample in enumerate(samples)
+            if sample.record_event.startswith("BATTERY CHANGED:")
+        )
         if len(samples) > 1:
             self.record_events.append((len(samples) - 1, "STOP", MUTED_FG))
+        self.last_battery_identity = battery_identity(samples[-1])
         self.start_event_pending = False
         self.packet_ok_count = len(samples)
         self.packet_error_count = 0
@@ -1093,6 +1477,11 @@ class BmsCollectorGui(tk.Tk):
         self.value_vars["packet_counts"].set(f"Rows {len(samples)}")
         self._set_link_health("idle")
         self._show_sample(samples[-1], connection="Loaded log", append=False, mark_packet=False)
+        self._show_bms_parameters(samples[-1])
+        if not samples[-1].bms_parameters:
+            self.parameter_status_var.set(
+                "Parameter settings were not stored in this older log."
+            )
         self.status_var.set(f"Loaded {len(samples)} samples from {filename}")
 
     def reset_view(self) -> None:
@@ -1100,7 +1489,10 @@ class BmsCollectorGui(tk.Tk):
             messagebox.showwarning("Reset", "Stop live collection before resetting.")
             return
         self.history.clear()
+        self.history_start_index = 0
         self.current_log_path = None
+        self.scanned_static_sample = None
+        self.scanned_static_key = None
         self.value_vars["csv_file"].set("--")
         self.record_events.clear()
         self.start_event_pending = False
@@ -1108,6 +1500,7 @@ class BmsCollectorGui(tk.Tk):
         self.packet_error_count = 0
         self.consecutive_packet_errors = 0
         self.last_packet_ok_monotonic = None
+        self.last_cycle_duration_seconds = None
         self.link_monitor_started_monotonic = None
         self.link_stale = False
         for key, variable in self.value_vars.items():
@@ -1131,6 +1524,7 @@ class BmsCollectorGui(tk.Tk):
             self.temp_page_chart.set_series([])
         self._clear_cell_values()
         self._clear_temperature_values()
+        self._show_bms_parameters(None)
 
     def scan(self) -> None:
         if self.running:
@@ -1188,6 +1582,29 @@ class BmsCollectorGui(tk.Tk):
                     max_packs=detected_max_packs,
                     product_model=detected_model,
                 )
+                if detected_model == PRODUCT_PS5120E:
+                    (
+                        sample.bms_parameters,
+                        sample.bms_parameter_errors,
+                        parameter_raw,
+                    ) = read_bms_parameters(
+                        ser,
+                        response_timeout=timeout,
+                        cells_per_pack=sample.cells_per_pack or 16,
+                    )
+                    if parameter_raw:
+                        sample.stats_raw = f"{sample.stats_raw} | parameters={parameter_raw}"
+                else:
+                    (
+                        sample.bms_parameters,
+                        sample.bms_parameter_errors,
+                        parameter_raw,
+                    ) = read_hv_bms_parameters(
+                        ser,
+                        response_timeout=timeout,
+                    )
+                    if parameter_raw:
+                        sample.stats_raw = f"{sample.stats_raw} | parameters={parameter_raw}"
             self.events.put(("scan_done", (result, sample)))
         except Exception as exc:
             self.events.put(("error", f"Scan failed: {exc}"))
@@ -1200,13 +1617,15 @@ class BmsCollectorGui(tk.Tk):
             messagebox.showwarning("Start", "Select a COM port first.")
             return
         try:
-            self._read_settings()
+            settings = self._read_settings()
         except ValueError as exc:
             messagebox.showerror("Settings", str(exc))
             return
         self.stop_event.clear()
         self.running = True
         self.history.clear()
+        self.history_start_index = 0
+        self.current_log_path = None
         self.record_events.clear()
         self.start_event_pending = True
         self.packet_ok_count = 0
@@ -1225,7 +1644,11 @@ class BmsCollectorGui(tk.Tk):
         self.start_button.configure(state="disabled")
         self.stop_button.configure(state="normal")
         self.status_var.set(f"Running on {port}")
-        self.worker = threading.Thread(target=self._collector_worker, daemon=True)
+        self.worker = threading.Thread(
+            target=self._collector_worker,
+            args=(settings, self.last_battery_identity),
+            daemon=True,
+        )
         self.worker.start()
 
     def _active_protocol_supported(self) -> bool:
@@ -1236,9 +1659,26 @@ class BmsCollectorGui(tk.Tk):
             self.stop_event.set()
             self.status_var.set("Stopping...")
 
-    def _collector_worker(self) -> None:
-        product_model, port, baud, max_packs, interval, timeout, csv_path = self._read_settings()
+    def _collector_worker(
+        self,
+        settings: tuple[str, str, int, int, float, float, Path],
+        previous_identity: tuple[str, str, str, int, int, int] | None,
+    ) -> None:
+        product_model, port, baud, max_packs, interval, timeout, csv_path = settings
         logger: CsvLogger | None = None
+        cached_scan = self.scanned_static_sample
+        cached_reference = (
+            cached_scan
+            if (
+                self.scanned_static_key == (product_model, port, baud)
+                and cached_scan is not None
+                and cached_scan.configured_pack_count
+                and cached_scan.cells_per_pack
+            )
+            else None
+        )
+        # 每次 Start 都重新讀取基本資料，確認實際連接的電池身分。
+        static_sample: BmsSample | None = None
         try:
             with serial.Serial(
                 port=port,
@@ -1253,7 +1693,7 @@ class BmsCollectorGui(tk.Tk):
                 self.events.put(("log", f"Connected to {port} @ {baud}; CSV will be created after first sample"))
                 next_poll = time.monotonic()
                 while not self.stop_event.is_set():
-                    wait_time = next_poll - time.monotonic()
+                    wait_time = next_poll - time.monotonic() if interval > 0 else 0.0
                     if wait_time > 0 and self.stop_event.wait(wait_time):
                         break
                     started_at = time.monotonic()
@@ -1263,10 +1703,68 @@ class BmsCollectorGui(tk.Tk):
                             response_timeout=timeout,
                             enforce_checksum=True,
                             invert_current=False,
-                            pack_count=None,
-                            cells_per_pack=None,
+                            pack_count=(
+                                static_sample.configured_pack_count
+                                if static_sample is not None
+                                else None
+                            ),
+                            cells_per_pack=(
+                                static_sample.cells_per_pack
+                                if static_sample is not None
+                                else None
+                            ),
                             max_packs=max_packs,
                             product_model=product_model,
+                            include_static=static_sample is None,
+                        )
+                        apply_cached_static_data(sample, static_sample)
+                        if static_sample is None:
+                            current_identity = battery_identity(sample)
+                            changed = battery_identity_changed(
+                                previous_identity,
+                                current_identity,
+                            )
+                            if (
+                                cached_reference is not None
+                                and battery_identity(cached_reference) == current_identity
+                            ):
+                                apply_cached_static_data(sample, cached_reference)
+                            if not sample.bms_parameters:
+                                if product_model == PRODUCT_PS5120E:
+                                    (
+                                        sample.bms_parameters,
+                                        sample.bms_parameter_errors,
+                                        parameter_raw,
+                                    ) = read_bms_parameters(
+                                        ser,
+                                        response_timeout=timeout,
+                                        cells_per_pack=sample.cells_per_pack or 16,
+                                    )
+                                else:
+                                    (
+                                        sample.bms_parameters,
+                                        sample.bms_parameter_errors,
+                                        parameter_raw,
+                                    ) = read_hv_bms_parameters(
+                                        ser,
+                                        response_timeout=timeout,
+                                    )
+                                if parameter_raw:
+                                    sample.stats_raw = (
+                                        f"{sample.stats_raw} | parameters={parameter_raw}"
+                                    )
+                            if changed and previous_identity is not None:
+                                sample.record_event = (
+                                    "BATTERY CHANGED: "
+                                    f"{battery_identity_label(previous_identity)} -> "
+                                    f"{battery_identity_label(current_identity)}"
+                                )
+                            static_sample = sample
+                        completed_at = time.monotonic()
+                        sample.timestamp = datetime.now().isoformat(timespec="seconds")
+                        sample.acquisition_duration_s = round(
+                            completed_at - started_at,
+                            3,
                         )
                         if logger is None:
                             log_path = build_log_path(csv_path, sample)
@@ -1279,11 +1777,19 @@ class BmsCollectorGui(tk.Tk):
                             self.events.put(("csv_path", str(log_path)))
                         logger.write(sample)
                         self.events.put(("sample", sample))
+                        if sample.record_event.startswith("BATTERY CHANGED:"):
+                            self.events.put(("battery_changed", sample.record_event))
                     except (TimeoutError, JbdProtocolError, serial.SerialException, ValueError) as exc:
                         self.events.put(("packet_error", str(exc)))
-                    next_poll += interval
-                    if next_poll <= started_at:
-                        next_poll = started_at + interval
+                        if interval <= 0 and self.stop_event.wait(0.25):
+                            break
+                    completed_at = time.monotonic()
+                    if interval <= 0:
+                        next_poll = completed_at
+                    else:
+                        next_poll += interval
+                        if next_poll <= completed_at:
+                            next_poll = completed_at
         except Exception as exc:
             self.events.put(("error", str(exc)))
         finally:
@@ -1296,17 +1802,12 @@ class BmsCollectorGui(tk.Tk):
         port = self.port_var.get().strip()
         baud = int(self.baud_var.get())
         max_packs = int(self.max_packs_var.get())
-        interval = float(int(float(self.interval_var.get()) + 0.999))
+        interval = acquisition_rate_seconds(self.interval_var.get())
         timeout = float(self.timeout_var.get())
         csv_path = Path(self.csv_var.get())
         max_allowed = PRODUCT_MODEL_MAX_PACKS.get(product_model, PRODUCT_MODEL_MAX_PACKS[PRODUCT_HV140])
         if max_packs < 1 or max_packs > max_allowed:
             raise ValueError(f"Max packs must be between 1 and {max_allowed}.")
-        minimum = model_minimum_interval_seconds(product_model, max_packs)
-        if interval < minimum:
-            raise ValueError(f"Interval must be at least {minimum} seconds for {max_packs} packs.")
-        if interval > 300:
-            raise ValueError("Interval must be 300 seconds or less.")
         if timeout <= 0:
             raise ValueError("Timeout must be greater than 0.")
         return product_model, port, baud, max_packs, interval, timeout, csv_path
@@ -1326,6 +1827,11 @@ class BmsCollectorGui(tk.Tk):
                 self._show_sample(payload)
             elif event == "packet_error":
                 self._show_packet_error(str(payload))
+            elif event == "battery_changed":
+                messagebox.showwarning(
+                    "Battery changed",
+                    f"{payload}\n\nThe new recording is marked clearly in the event timeline and CSV log.",
+                )
             elif event == "connection":
                 self.value_vars["link_status"].set(str(payload))
                 self._set_link_health("ok")
@@ -1352,6 +1858,22 @@ class BmsCollectorGui(tk.Tk):
                 self._set_link_health("idle")
                 self._show_busy_message("Rendering full log", "Rendering the full chart. Please wait...")
                 self.after(80, self._finish_stopped_render)
+            elif event == "full_log_ready":
+                self.full_log_loading = False
+                samples, record_events = payload
+                self.history = list(samples)
+                self.history_start_index = 0
+                self.record_events = list(record_events)
+                self._update_charts()
+                self.status_var.set(
+                    f"Idle; full log timeline loaded ({len(self.history)} display samples)"
+                )
+                self._hide_busy_message()
+            elif event == "full_log_error":
+                self.full_log_loading = False
+                self._update_charts()
+                self.status_var.set(f"Idle; full log rendering failed: {payload}")
+                self._hide_busy_message()
             elif event == "scan_done":
                 self._set_controls_enabled(True)
                 if payload:
@@ -1360,7 +1882,14 @@ class BmsCollectorGui(tk.Tk):
                     self.port_var.set(result.port)
                     self.baud_var.set(result.baud)
                     self.status_var.set(f"Found {result.product_model} on {result.port} @ {result.baud}")
+                    self.scanned_static_sample = sample
+                    self.scanned_static_key = (
+                        result.product_model,
+                        result.port,
+                        result.baud,
+                    )
                     self._show_sample(sample, connection=f"{result.port} @ {result.baud}")
+                    self._show_bms_parameters(sample)
                 else:
                     message = "No supported BMS found. Check wiring, COM port, baud rate, and model support (HV140 / PS5120E)."
                     self.status_var.set("No BMS found")
@@ -1382,9 +1911,17 @@ class BmsCollectorGui(tk.Tk):
             self._show_packet_ok(sample)
         if append:
             self.history.append(sample)
+            if self.running and len(self.history) > CHART_LIVE_SAMPLE_LIMIT:
+                remove_count = len(self.history) - CHART_LIVE_SAMPLE_LIMIT
+                del self.history[:remove_count]
+                self.history_start_index += remove_count
         if append and self.start_event_pending:
             self._add_record_event("START", GREEN)
             self.start_event_pending = False
+        if append and getattr(sample, "record_event", "").startswith("BATTERY CHANGED:"):
+            self._add_record_event("BATTERY CHANGED", RED)
+        if self.running:
+            self.last_battery_identity = battery_identity(sample)
 
         if connection:
             self.value_vars["connection"].set(connection)
@@ -1431,6 +1968,9 @@ class BmsCollectorGui(tk.Tk):
             self.value_vars["highest_temp"].set("--")
             self.value_vars["lowest_temp"].set("--")
         self.value_vars["timestamp"].set(sample.timestamp)
+        if sample.acquisition_duration_s is not None:
+            self.last_cycle_duration_seconds = sample.acquisition_duration_s
+            self._on_interval_changed()
         self._set_errors(sample_error_codes(sample))
         if (
             getattr(sample, "product_model", None) == PRODUCT_PS5120E
@@ -1479,7 +2019,7 @@ class BmsCollectorGui(tk.Tk):
     def _add_record_event(self, label: str, color: str) -> None:
         if not self.history:
             return
-        sample_index = len(self.history) - 1
+        sample_index = self.history_start_index + len(self.history) - 1
         if self.record_events and self.record_events[-1] == (sample_index, label, color):
             return
         self.record_events.append((sample_index, label, color))
@@ -1511,14 +2051,17 @@ class BmsCollectorGui(tk.Tk):
 
     def _link_stale_after_seconds(self) -> float:
         try:
-            interval = float(self.interval_var.get())
+            interval = acquisition_rate_seconds(self.interval_var.get())
         except (tk.TclError, ValueError):
-            interval = 5.0
+            interval = 0.0
         try:
             timeout = float(self.timeout_var.get())
         except (tk.TclError, ValueError):
             timeout = 3.0
-        return max(8.0, interval + timeout + 2.0, timeout * 2.0 + 2.0)
+        cycle_duration = self.last_cycle_duration_seconds or 0.0
+        if interval <= 0:
+            return max(8.0, cycle_duration * 2.0 + timeout + 2.0, timeout * 2.0 + 2.0)
+        return max(8.0, interval + timeout + 2.0, cycle_duration + timeout + 2.0)
 
     def _set_link_health(self, state: str) -> None:
         if state == "ok":
@@ -1590,11 +2133,50 @@ class BmsCollectorGui(tk.Tk):
             self.busy_window = None
 
     def _finish_stopped_render(self) -> None:
-        try:
+        log_path = self.current_log_path
+        if log_path is None or not log_path.exists():
             self._update_charts()
             self.status_var.set("Idle")
-        finally:
             self._hide_busy_message()
+            return
+        self.full_log_loading = True
+        threading.Thread(
+            target=self._load_full_log_for_chart_worker,
+            args=(log_path, list(self.record_events)),
+            daemon=True,
+        ).start()
+
+    def _load_full_log_for_chart_worker(
+        self,
+        path: Path,
+        record_events: list[tuple[int, str, str]],
+    ) -> None:
+        try:
+            total_sample_count = count_csv_samples(path)
+            samples = load_samples_from_csv(
+                path,
+                max_samples=CHART_FULL_SAMPLE_LIMIT,
+                total_rows=total_sample_count,
+            )
+            for sample in samples:
+                sample.basic_raw = ""
+                sample.config_raw = ""
+                sample.cells_raw = ""
+                sample.stats_raw = ""
+            remapped_events: list[tuple[int, str, str]] = []
+            if total_sample_count and samples:
+                scale = (len(samples) - 1) / max(total_sample_count - 1, 1)
+                remapped_events = [
+                    (
+                        min(len(samples) - 1, max(0, round(index * scale))),
+                        label,
+                        color,
+                    )
+                    for index, label, color in record_events
+                ]
+            self.events.put(("full_log_ready", (samples, remapped_events)))
+        except Exception as exc:
+            self.events.put(("full_log_error", str(exc)))
 
     def _update_charts(self) -> None:
         samples = self._chart_samples()
@@ -1738,7 +2320,7 @@ class BmsCollectorGui(tk.Tk):
     def _record_event_markers(self, samples: list[object]) -> list[tuple[int, float | None, str, str, str]]:
         if not samples or not self.record_events:
             return []
-        visible_offset = len(self.history) - len(samples)
+        visible_offset = self.history_start_index + len(self.history) - len(samples)
         visible_count = len(samples)
         markers: list[tuple[int, float | None, str, str, str]] = []
         for sample_index, label, color in self.record_events:
@@ -2016,15 +2598,70 @@ def format_axis(value: float) -> str:
     return f"{value:.2f}"
 
 
-def load_samples_from_csv(path: Path) -> list[BmsSample]:
+def acquisition_rate_index(value: object) -> int:
+    index = int(float(value) + 0.5)
+    return min(max(index, 0), len(ACQUISITION_RATE_OPTIONS) - 1)
+
+
+def acquisition_rate_seconds(value: object) -> float:
+    return ACQUISITION_RATE_OPTIONS[acquisition_rate_index(value)][1]
+
+
+def acquisition_rate_label(
+    rate_label: str,
+    last_cycle_duration_seconds: float | None = None,
+) -> str:
+    label = rate_label
+    if last_cycle_duration_seconds is not None:
+        label += f"  last {last_cycle_duration_seconds:.1f}s"
+    return label
+
+
+def count_csv_samples(path: Path) -> int:
+    with path.open(newline="", encoding="utf-8-sig") as file:
+        reader = csv.reader(file)
+        return max(0, sum(1 for _row in reader) - 1)
+
+
+def load_samples_from_csv(
+    path: Path,
+    *,
+    max_samples: int | None = None,
+    total_rows: int | None = None,
+) -> list[BmsSample]:
     samples: list[BmsSample] = []
+    static_values: dict[str, str] = {}
+    selected_rows: set[int] | None = None
+    if max_samples is not None and max_samples > 1:
+        row_count = total_rows if total_rows is not None else count_csv_samples(path)
+        if row_count > max_samples:
+            step = (row_count - 1) / (max_samples - 1)
+            selected_rows = {
+                min(row_count - 1, round(index * step))
+                for index in range(max_samples)
+            }
     with path.open(newline="", encoding="utf-8-sig") as file:
         reader = csv.DictReader(file)
-        for row in reader:
+        for row_index, row in enumerate(reader):
+            for field in CSV_STATIC_FIELDS:
+                value = row.get(field, "")
+                if value not in (None, ""):
+                    static_values[field] = value
+            if selected_rows is not None and row_index not in selected_rows:
+                continue
+            effective_row = dict(row)
+            for field, value in static_values.items():
+                if effective_row.get(field, "") in (None, ""):
+                    effective_row[field] = value
+            row = effective_row
             timestamp = row.get("timestamp", "").strip()
             if not timestamp:
                 continue
             sample = BmsSample(timestamp=timestamp)
+            sample.acquisition_duration_s = parse_optional_float(
+                row.get("acquisition_duration_s")
+            )
+            sample.record_event = row.get("record_event", "").strip()
             sample.product_model = row.get("product_model", "").strip() or infer_product_model_from_filename(path)
             sample.voltage_v = parse_optional_float(row.get("voltage_v"))
             sample.current_a = parse_optional_float(row.get("current_a"))
@@ -2049,15 +2686,41 @@ def load_samples_from_csv(path: Path) -> list[BmsSample]:
             sample.config_raw = row.get("config_raw", "")
             sample.cells_raw = row.get("cells_raw", "")
             sample.stats_raw = row.get("stats_raw", "")
-            sample.temperatures_c = parse_indexed_float_columns(row, "temp_", "_c")
-            sample.cell_voltages_mv = [
-                parse_optional_int(row[key])
-                for key in sorted_indexed_keys(row, "cell_", "_mv")
-                if row.get(key, "").strip() != ""
-            ]
+            sample.temperatures_c = parse_indexed_float_columns(
+                row,
+                "temp_",
+                "_c",
+                expected_count=sample.ntc_count,
+            )
+            detected_cell_count = parse_optional_int(row.get("detected_cell_voltage_count"))
+            expected_cell_count = sample.total_cell_count or detected_cell_count
+            sample.cell_voltages_mv = parse_indexed_int_columns(
+                row,
+                "cell_",
+                "_mv",
+                expected_count=expected_cell_count,
+            )
             sample.ntc_count = sample.ntc_count or len(sample.temperatures_c)
             sample.total_cell_count = sample.total_cell_count or len(sample.cell_voltages_mv)
-            if sample.product_model == PRODUCT_PS5120E:
+            sample.temperature_warning_lines = parse_warning_lines(
+                row.get("temperature_warning_lines")
+            )
+            sample.cell_voltage_warning_lines = parse_warning_lines(
+                row.get("cell_voltage_warning_lines")
+            )
+            sample.total_voltage_warning_lines_v = parse_warning_lines(
+                row.get("total_voltage_warning_lines_v")
+            )
+            sample.bms_parameters = parse_bms_parameters(row.get("bms_parameters"))
+            sample.bms_parameter_errors = parse_string_list(
+                row.get("bms_parameter_errors")
+            )
+            if (
+                sample.product_model == PRODUCT_PS5120E
+                and not sample.temperature_warning_lines
+                and not sample.cell_voltage_warning_lines
+                and not sample.total_voltage_warning_lines_v
+            ):
                 (
                     sample.temperature_warning_lines,
                     sample.cell_voltage_warning_lines,
@@ -2107,13 +2770,110 @@ def sorted_indexed_keys(row: dict[str, str], prefix: str, suffix: str) -> list[s
     )
 
 
-def parse_indexed_float_columns(row: dict[str, str], prefix: str, suffix: str) -> list[float]:
-    values: list[float] = []
-    for key in sorted_indexed_keys(row, prefix, suffix):
-        value = parse_optional_float(row.get(key))
+def parse_indexed_float_columns(
+    row: dict[str, str],
+    prefix: str,
+    suffix: str,
+    *,
+    expected_count: int | None = None,
+) -> list[float]:
+    values = [
+        parse_optional_float(row.get(key))
+        for key in sorted_indexed_keys(row, prefix, suffix)
+    ]
+    return [
+        value
+        for value in trim_indexed_values(values, expected_count=expected_count)
+        if value is not None
+    ]
+
+
+def parse_indexed_int_columns(
+    row: dict[str, str],
+    prefix: str,
+    suffix: str,
+    *,
+    expected_count: int | None = None,
+) -> list[int | None]:
+    values = [
+        parse_optional_int(row.get(key))
+        for key in sorted_indexed_keys(row, prefix, suffix)
+    ]
+    return trim_indexed_values(values, expected_count=expected_count)
+
+
+def trim_indexed_values(
+    values: list[float | int | None],
+    *,
+    expected_count: int | None,
+) -> list:
+    if expected_count is not None and expected_count > 0:
+        return values[:expected_count]
+    last_value_index = -1
+    for index, value in enumerate(values):
         if value is not None:
-            values.append(value)
-    return values
+            last_value_index = index
+    return values[: last_value_index + 1]
+
+
+def parse_warning_lines(value: object) -> list[tuple[float, str, str]]:
+    text = str(value or "").strip()
+    if not text:
+        return []
+    try:
+        decoded = json.loads(text)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return []
+    lines: list[tuple[float, str, str]] = []
+    if not isinstance(decoded, list):
+        return lines
+    for item in decoded:
+        if not isinstance(item, (list, tuple)) or len(item) != 3:
+            continue
+        try:
+            lines.append((float(item[0]), str(item[1]), str(item[2])))
+        except (TypeError, ValueError):
+            continue
+    return lines
+
+
+def parse_bms_parameters(value: object) -> list[dict[str, str]]:
+    text = str(value or "").strip()
+    if not text:
+        return []
+    try:
+        decoded = json.loads(text)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return []
+    if not isinstance(decoded, list):
+        return []
+    parameters: list[dict[str, str]] = []
+    for item in decoded:
+        if not isinstance(item, dict):
+            continue
+        parameters.append(
+            {
+                "group": str(item.get("group", "Other")),
+                "name": str(item.get("name", "")),
+                "value": str(item.get("value", "--")),
+                "unit": str(item.get("unit", "")),
+                "status": str(item.get("status", "ok")),
+            }
+        )
+    return parameters
+
+
+def parse_string_list(value: object) -> list[str]:
+    text = str(value or "").strip()
+    if not text:
+        return []
+    try:
+        decoded = json.loads(text)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return []
+    if not isinstance(decoded, list):
+        return []
+    return [str(item) for item in decoded]
 
 
 def parse_optional_float(value: object) -> float | None:
@@ -2146,6 +2906,35 @@ def parse_optional_bool(value: object) -> bool | None:
     if text in {"false", "0", "no", "n"}:
         return False
     return None
+
+
+def chart_display_points(
+    values: list[float | None],
+    *,
+    max_points: int,
+) -> list[tuple[int, float]]:
+    valid = [(index, value) for index, value in enumerate(values) if value is not None]
+    if len(valid) <= max_points or max_points < 4:
+        return valid
+
+    bucket_count = max(1, max_points // 2)
+    bucket_size = max(1, (len(values) + bucket_count - 1) // bucket_count)
+    selected: dict[int, float] = {}
+    for start in range(0, len(values), bucket_size):
+        bucket = [
+            (index, value)
+            for index, value in enumerate(values[start : start + bucket_size], start=start)
+            if value is not None
+        ]
+        if not bucket:
+            continue
+        low = min(bucket, key=lambda item: item[1])
+        high = max(bucket, key=lambda item: item[1])
+        selected[low[0]] = low[1]
+        selected[high[0]] = high[1]
+    selected[valid[0][0]] = valid[0][1]
+    selected[valid[-1][0]] = valid[-1][1]
+    return sorted(selected.items())
 
 
 def color_cycle(count: int) -> list[str]:

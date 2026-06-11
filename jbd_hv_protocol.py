@@ -36,6 +36,83 @@ TOTAL_VOLTAGE_THRESHOLD_GROUPS = [
     ("Pack OV", 0x1830, 0.1),
     ("Pack UV", 0x1848, 0.1),
 ]
+HV_PARAMETER_ALARM_GROUPS = [
+    ("Cell Over Voltage", 0x1800, "voltage_mv", "Cell OV"),
+    ("Pack Over Voltage", 0x1830, "voltage_decivolt", "Pack OV"),
+    ("Cell Under Voltage", 0x1818, "voltage_mv", "Cell UV"),
+    ("Pack Under Voltage", 0x1848, "voltage_decivolt", "Pack UV"),
+    ("Charge Overcurrent", 0x1878, "current_deciamp", "CHG OC"),
+    ("Discharge Overcurrent", 0x1890, "current_deciamp", "DSG OC"),
+    ("High Temperature", 0x18A8, "temperature", "CHG OT"),
+    ("High Temperature", 0x18D8, "temperature", "DSG OT"),
+    ("Low Temperature", 0x18C0, "temperature", "CHG UT"),
+    ("Low Temperature", 0x18F0, "temperature", "DSG UT"),
+    ("Environment Temperature", 0x1908, "temperature", "ENV OT"),
+    ("Environment Temperature", 0x1920, "temperature", "ENV UT"),
+    ("MOS Temperature", 0x1950, "temperature_delta", "MOS OT"),
+    ("Full Charge / SOC", 0x1998, "percent", "SOC Low"),
+]
+HV_UNAVAILABLE_PARAMETER_STATUS = (
+    "Unavailable: JBD-HV V3.37 does not define a readable SCP delay register"
+)
+
+# 依 HV140 原廠 Parameter Setting 畫面排列，共 53 項。
+# address=None 表示原廠畫面有此欄位，但 V3.37 協議沒有提供可讀位址。
+HV_PARAMETER_FIELDS: list[tuple[str, str, int | None, str]] = [
+    ("Cell Over Voltage", "Cell OV Alarm", 0x1800, "voltage_mv"),
+    ("Cell Over Voltage", "Cell OV Protect", 0x1810, "voltage_mv"),
+    ("Cell Over Voltage", "Cell OVP Release", 0x1814, "voltage_mv"),
+    ("Cell Over Voltage", "Cell OVP Delay Time", 0x1812, "milliseconds"),
+    ("Pack Over Voltage", "Pack OV Alarm", 0x1830, "voltage_decivolt"),
+    ("Pack Over Voltage", "Pack OV Protect", 0x1840, "voltage_decivolt"),
+    ("Pack Over Voltage", "Pack OVP Release", 0x1844, "voltage_decivolt"),
+    ("Pack Over Voltage", "Pack OVP Delay Time", 0x1842, "milliseconds"),
+    ("Cell Under Voltage", "Cell UV Alarm", 0x1818, "voltage_mv"),
+    ("Cell Under Voltage", "Cell UV Protect", 0x1828, "voltage_mv"),
+    ("Cell Under Voltage", "Cell UVP Release", 0x182C, "voltage_mv"),
+    ("Cell Under Voltage", "Cell UVP Delay Time", 0x182A, "milliseconds"),
+    ("Pack Under Voltage", "Pack UV Alarm", 0x1848, "voltage_decivolt"),
+    ("Pack Under Voltage", "Pack UV Protect", 0x1858, "voltage_decivolt"),
+    ("Pack Under Voltage", "Pack UVP Release", 0x185C, "voltage_decivolt"),
+    ("Pack Under Voltage", "Pack UVP Delay Time", 0x185A, "milliseconds"),
+    ("Charge Overcurrent", "CHG OC Alarm", 0x1878, "current_deciamp"),
+    ("Charge Overcurrent", "CHG OC Protect", 0x1888, "current_deciamp"),
+    ("Charge Overcurrent", "CHG OCP Delay Time", 0x188A, "milliseconds"),
+    ("Discharge Overcurrent", "DSG OC Alarm", 0x1890, "current_deciamp"),
+    ("Discharge Overcurrent", "DSG OC 1 Protect", 0x1898, "current_deciamp"),
+    ("Discharge Overcurrent", "DSG OCP 1 Delay Time", 0x189A, "milliseconds"),
+    ("Discharge Overcurrent", "DSG OC 2 Protect", 0x18A0, "current_deciamp"),
+    ("Discharge Overcurrent", "DSG OCP 2 Delay Time", 0x18A2, "milliseconds"),
+    ("Discharge Overcurrent", "SCP Delay Time", None, "microseconds"),
+    ("High Temperature", "CHG OT Alarm", 0x18A8, "temperature"),
+    ("High Temperature", "CHG OT Protect", 0x18B8, "temperature"),
+    ("High Temperature", "CHG OTP Release", 0x18BC, "temperature"),
+    ("High Temperature", "DSG OT Alarm", 0x18D8, "temperature"),
+    ("High Temperature", "DSG OT Protect", 0x18E8, "temperature"),
+    ("High Temperature", "DSG OTP Release", 0x18EC, "temperature"),
+    ("Low Temperature", "CHG UT Alarm", 0x18C0, "temperature"),
+    ("Low Temperature", "CHG UT Protect", 0x18D0, "temperature"),
+    ("Low Temperature", "CHG UTP Release", 0x18D4, "temperature"),
+    ("Low Temperature", "DSG UT Alarm", 0x18F0, "temperature"),
+    ("Low Temperature", "DSG UT Protect", 0x1900, "temperature"),
+    ("Low Temperature", "DSG UTP Release", 0x1904, "temperature"),
+    ("Environment Temperature", "ENV OT Alarm", 0x1908, "temperature"),
+    ("Environment Temperature", "ENV OT Protect", 0x1918, "temperature"),
+    ("Environment Temperature", "ENV OTP Release", 0x191C, "temperature"),
+    ("Environment Temperature", "ENV UT Alarm", 0x1920, "temperature"),
+    ("Environment Temperature", "ENV UT Protect", 0x1930, "temperature"),
+    ("Environment Temperature", "ENV UTP Release", 0x1934, "temperature"),
+    ("MOS Temperature", "MOS OT Alarm", 0x1950, "temperature_delta"),
+    ("MOS Temperature", "MOS OT Protect", 0x1960, "temperature_delta"),
+    ("MOS Temperature", "MOS OTP Release", 0x1964, "temperature_delta"),
+    ("Full Charge / SOC", "SOC Low Alarm", 0x1998, "percent"),
+    ("Full Charge / SOC", "Pack FullCharge Voltage", 0x1F0C, "voltage_decivolt"),
+    ("Full Charge / SOC", "Pack FullCharge Current", 0x1F0E, "milliamp"),
+    ("Balance / Sleep", "Balance Threshold", 0x1F04, "millivolt"),
+    ("Balance / Sleep", "Balance Delta Vcell", 0x1F06, "millivolt"),
+    ("Balance / Sleep", "Sleep Vcell", 0x1F78, "voltage_mv"),
+    ("Balance / Sleep", "Delay Time", 0x1F7A, "minutes"),
+]
 
 
 class JbdHvProtocolError(Exception):
@@ -56,6 +133,8 @@ class HvRegisterFrame:
 @dataclass
 class BmsSample:
     timestamp: str
+    acquisition_duration_s: float | None = None
+    record_event: str = ""
     product_model: str = "HV140"
     voltage_v: float | None = None
     current_a: float | None = None
@@ -72,6 +151,8 @@ class BmsSample:
     temperature_warning_lines: list[tuple[float, str, str]] = field(default_factory=list)
     cell_voltage_warning_lines: list[tuple[float, str, str]] = field(default_factory=list)
     total_voltage_warning_lines_v: list[tuple[float, str, str]] = field(default_factory=list)
+    bms_parameters: list[dict[str, str]] = field(default_factory=list)
+    bms_parameter_errors: list[str] = field(default_factory=list)
     cell_voltages_mv: list[int | None] = field(default_factory=list)
     cell_balance_states: list[int | None] = field(default_factory=list)
     pack_voltages_v: list[float] = field(default_factory=list)
@@ -286,6 +367,178 @@ def decode_temperature(raw: int | None) -> float | None:
     if raw is None:
         return None
     return round(raw * 0.1 - 50.0, 1)
+
+
+def _parameter(
+    group: str,
+    name: str,
+    value: str,
+    unit: str,
+    *,
+    status: str = "ok",
+) -> dict[str, str]:
+    return {
+        "group": group,
+        "name": name,
+        "value": value,
+        "unit": unit,
+        "status": status,
+    }
+
+
+def _format_parameter_value(raw: int, value_type: str) -> tuple[str, str]:
+    if value_type == "voltage_mv":
+        return f"{raw / 1000.0:.3f}", "V"
+    if value_type == "voltage_decivolt":
+        return f"{raw / 10.0:.1f}", "V"
+    if value_type == "current_deciamp":
+        return f"{raw / 10.0:.1f}", "A"
+    if value_type == "temperature":
+        return f"{raw / 10.0 - 50.0:.1f}", "C"
+    if value_type == "temperature_delta":
+        return f"{raw / 10.0:.1f}", "C"
+    if value_type == "percent":
+        return str(raw), "%"
+    if value_type == "millivolt":
+        return str(raw), "mV"
+    if value_type == "milliamp":
+        return str(raw), "mA"
+    if value_type == "minutes":
+        return str(raw), "min"
+    if value_type == "milliseconds":
+        return str(raw), "ms"
+    if value_type == "microseconds":
+        return str(raw), "us"
+    return str(raw), ""
+
+
+def decode_parameter_alarm_group(
+    frame: HvRegisterFrame,
+    *,
+    group: str,
+    value_type: str,
+    prefix: str,
+) -> list[dict[str, str]]:
+    """將三級告警群組整理成原廠參數頁使用的唯讀欄位。"""
+    words = [
+        int.from_bytes(frame.data[offset : offset + 2], "big")
+        for offset in range(0, len(frame.data) - 1, 2)
+    ]
+    if len(words) < 12:
+        raise JbdHvProtocolError(f"Incomplete parameter group at 0x{frame.start:04X}")
+
+    alarm_value, alarm_unit = _format_parameter_value(words[0], value_type)
+    protect_value, protect_unit = _format_parameter_value(words[8], value_type)
+    release_value, release_unit = _format_parameter_value(words[10], value_type)
+    return [
+        _parameter(group, f"{prefix} Alarm", alarm_value, alarm_unit),
+        _parameter(group, f"{prefix} Protect", protect_value, protect_unit),
+        _parameter(group, f"{prefix}P Release", release_value, release_unit),
+        _parameter(group, f"{prefix}P Delay Time", str(words[9]), "ms"),
+    ]
+
+
+def decode_discharge_overcurrent_parameters(
+    frame: HvRegisterFrame,
+) -> list[dict[str, str]]:
+    """JBD 將放電過流的 L1/L2/L3 對應為告警、OC1、OC2。"""
+    words = [
+        int.from_bytes(frame.data[offset : offset + 2], "big")
+        for offset in range(0, len(frame.data) - 1, 2)
+    ]
+    if len(words) < 12:
+        raise JbdHvProtocolError(f"Incomplete parameter group at 0x{frame.start:04X}")
+
+    alarm, unit = _format_parameter_value(words[0], "current_deciamp")
+    protect_1, _ = _format_parameter_value(words[4], "current_deciamp")
+    protect_2, _ = _format_parameter_value(words[8], "current_deciamp")
+    return [
+        _parameter("Discharge Overcurrent", "DSG OC Alarm", alarm, unit),
+        _parameter("Discharge Overcurrent", "DSG OC 1 Protect", protect_1, unit),
+        _parameter("Discharge Overcurrent", "DSG OCP 1 Delay Time", str(words[5]), "ms"),
+        _parameter("Discharge Overcurrent", "DSG OC 2 Protect", protect_2, unit),
+        _parameter("Discharge Overcurrent", "DSG OCP 2 Delay Time", str(words[9]), "ms"),
+    ]
+
+
+def _failed_parameter_group(
+    group: str,
+    names: list[tuple[str, str]],
+    error: str,
+) -> list[dict[str, str]]:
+    return [
+        _parameter(group, name, "--", unit, status=error)
+        for name, unit in names
+    ]
+
+
+def _read_parameter_word(
+    ser: serial.Serial,
+    address: int,
+    *,
+    response_timeout: float,
+) -> tuple[int, str]:
+    """逐一讀取參數寄存器，供群組讀取失敗時後備使用。"""
+    last_error: Exception | None = None
+    for attempt in range(2):
+        try:
+            if attempt:
+                time.sleep(0.15)
+            frame = read_range(
+                ser,
+                address,
+                address + 1,
+                response_timeout=response_timeout,
+            )
+            raw = u16(frame, address)
+            if raw is None:
+                raise JbdHvProtocolError(f"Missing register 0x{address:04X}")
+            return raw, frame.data.hex().upper()
+        except (TimeoutError, JbdHvProtocolError, serial.SerialException) as exc:
+            last_error = exc
+    assert last_error is not None
+    raise last_error
+
+
+def read_bms_parameters(
+    ser: serial.Serial,
+    *,
+    response_timeout: float,
+) -> tuple[list[dict[str, str]], list[str], str]:
+    """依 JBD-HV V3.37 協議讀取 HV140 參數，不執行任何寫入。"""
+    parameters: list[dict[str, str]] = []
+    errors: list[str] = []
+    raw_parts: list[str] = []
+    for group, name, address, value_type in HV_PARAMETER_FIELDS:
+        if address is None:
+            _, unit = _format_parameter_value(0, value_type)
+            parameters.append(
+                _parameter(
+                    group,
+                    name,
+                    "--",
+                    unit,
+                    status=HV_UNAVAILABLE_PARAMETER_STATUS,
+                )
+            )
+            continue
+        try:
+            time.sleep(0.03)
+            raw, raw_hex = _read_parameter_word(
+                ser,
+                address,
+                response_timeout=response_timeout,
+            )
+            raw_parts.append(f"0x{address:04X}={raw_hex}")
+            value, unit = _format_parameter_value(raw, value_type)
+            parameters.append(_parameter(group, name, value, unit))
+        except (TimeoutError, JbdHvProtocolError, serial.SerialException) as exc:
+            error = f"0x{address:04X} {name}: {exc}"
+            errors.append(error)
+            _, unit = _format_parameter_value(0, value_type)
+            parameters.append(_parameter(group, name, "--", unit, status=error))
+
+    return parameters, errors, "; ".join(raw_parts)
 
 
 def decode_fw(value: int | None) -> str | None:
@@ -677,6 +930,7 @@ def poll_hv_bms(
     max_packs: int,
     pack_count_override: int | None = None,
     cells_per_pack_override: int | None = None,
+    include_static: bool = True,
 ) -> BmsSample:
     sample = BmsSample(timestamp=dt.datetime.now().isoformat(timespec="seconds"))
 
@@ -686,20 +940,21 @@ def poll_hv_bms(
     for key, value in decode_main_frame(main).items():
         setattr(sample, key, value)
 
-    for attempt in range(2):
-        try:
-            time.sleep(0.2)
-            config = read_range(ser, 0x2200, 0x2211, response_timeout=response_timeout)
-            sample.config_raw = config.raw.hex(" ")
-            sample.cells_raw = sample.config_raw
-            sample.cells_checksum_ok = config.checksum_ok
-            for key, value in decode_config_frame(config).items():
-                setattr(sample, key, value)
-            break
-        except (TimeoutError, JbdHvProtocolError, serial.SerialException):
-            sample.cells_checksum_ok = False
-            if attempt:
+    if include_static:
+        for attempt in range(2):
+            try:
+                time.sleep(0.2)
+                config = read_range(ser, 0x2200, 0x2211, response_timeout=response_timeout)
+                sample.config_raw = config.raw.hex(" ")
+                sample.cells_raw = sample.config_raw
+                sample.cells_checksum_ok = config.checksum_ok
+                for key, value in decode_config_frame(config).items():
+                    setattr(sample, key, value)
                 break
+            except (TimeoutError, JbdHvProtocolError, serial.SerialException):
+                sample.cells_checksum_ok = False
+                if attempt:
+                    break
 
     if pack_count_override is not None:
         if pack_count_override < 1 or pack_count_override > max_packs:
@@ -729,19 +984,20 @@ def poll_hv_bms(
         except (TimeoutError, JbdHvProtocolError, serial.SerialException):
             pass
 
-    sample.temperature_warning_lines = read_temperature_warning_lines(
-        ser,
-        response_timeout=response_timeout,
-    )
-    sample.cell_voltage_warning_lines = read_voltage_warning_lines(
-        ser,
-        CELL_VOLTAGE_THRESHOLD_GROUPS,
-        response_timeout=response_timeout,
-    )
-    sample.total_voltage_warning_lines_v = read_voltage_warning_lines(
-        ser,
-        TOTAL_VOLTAGE_THRESHOLD_GROUPS,
-        response_timeout=response_timeout,
-    )
+    if include_static:
+        sample.temperature_warning_lines = read_temperature_warning_lines(
+            ser,
+            response_timeout=response_timeout,
+        )
+        sample.cell_voltage_warning_lines = read_voltage_warning_lines(
+            ser,
+            CELL_VOLTAGE_THRESHOLD_GROUPS,
+            response_timeout=response_timeout,
+        )
+        sample.total_voltage_warning_lines_v = read_voltage_warning_lines(
+            ser,
+            TOTAL_VOLTAGE_THRESHOLD_GROUPS,
+            response_timeout=response_timeout,
+        )
 
     return sample

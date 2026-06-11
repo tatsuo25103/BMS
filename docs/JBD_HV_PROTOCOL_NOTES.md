@@ -52,6 +52,25 @@ crc:     09 76
   - Total/pack under voltage: `0x1848`, raw scale `0.1 V`
   - Each group is decoded as L1/L2/L3 values at word offsets `0`, `4`, and `8`.
   - The GUI pack-voltage chart divides total-voltage thresholds by the detected pack count because the plotted pack voltage is derived per battery pack.
+- The read-only `BMS Parameters` page uses the same 12-word alarm groups:
+  - L1 value: word `0`
+  - L2 value/delay: words `4` and `5`
+  - L3 protection value/delay/release: words `8`, `9`, and `10`
+  - Discharge overcurrent displays L1 as Alarm, L2 as OC1, and L3 as OC2.
+- Additional read-only HV140 settings:
+  - Balance start voltage: `0x1F04`, mV
+  - Balance start delta: `0x1F06`, mV
+  - Full-charge calibration voltage: `0x1F0C`, `0.1 V`
+  - Full-charge calibration current: `0x1F0E`, mA
+  - Standby sleep voltage: `0x1F78`, mV
+  - Standby sleep delay: `0x1F7A`, minutes
+- The original HV140 parameter page contains 53 fields. `SCP Delay Time` remains
+  visible as the 53rd field, but Protocol V3.37 does not define a readable
+  register for it. The application marks it unavailable instead of inventing a
+  value.
+- Each HV140 field is tied to an explicit register address, scale, and unit.
+  Reads use exact two-byte ranges with one retry because some HV140 firmware
+  drops broad parameter-range requests.
 
 ## Error Decoding
 

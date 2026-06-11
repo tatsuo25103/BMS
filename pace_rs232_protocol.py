@@ -26,9 +26,35 @@ CID2_PARAM_CELL_OV = 0xD1
 CID2_PARAM_CELL_UV = 0xD3
 CID2_PARAM_TOTAL_OV = 0xD5
 CID2_PARAM_TOTAL_UV = 0xD7
+CID2_PARAM_CHARGE_OC = 0xD9
+CID2_PARAM_DISCHARGE_OC_1 = 0xDB
+CID2_PARAM_DISCHARGE_OC_2 = 0xE3
+CID2_PARAM_SHORT_CIRCUIT = 0xE5
+CID2_PARAM_BALANCE = 0xB6
+CID2_PARAM_SLEEP = 0xA0
+CID2_PARAM_FULL_CHARGE = 0xAF
 CID2_PARAM_TEMP_HIGH = 0xDD
+CID2_PARAM_MOS_TEMP = 0xE1
+CID2_PARAM_ENV_TEMP = 0xE7
 CID2_PARAM_TEMP_LOW = 0xDF
-CID2_PARAM_TEMP_MIXED = 0xE7
+
+PACE_PARAMETER_COMMANDS = (
+    CID2_PARAM_CELL_OV,
+    CID2_PARAM_TOTAL_OV,
+    CID2_PARAM_CELL_UV,
+    CID2_PARAM_TOTAL_UV,
+    CID2_PARAM_CHARGE_OC,
+    CID2_PARAM_DISCHARGE_OC_1,
+    CID2_PARAM_DISCHARGE_OC_2,
+    CID2_PARAM_SHORT_CIRCUIT,
+    CID2_PARAM_BALANCE,
+    CID2_PARAM_SLEEP,
+    CID2_PARAM_FULL_CHARGE,
+    CID2_PARAM_TEMP_HIGH,
+    CID2_PARAM_MOS_TEMP,
+    CID2_PARAM_ENV_TEMP,
+    CID2_PARAM_TEMP_LOW,
+)
 
 PS5120E_DEFAULT_TEMPERATURE_WARNING_LINES = [
     (-20.0, "#3b82f6", "PS5120E default UT -20 C"),
@@ -57,6 +83,240 @@ class PaceFrame:
     info: bytes
     raw: bytes
     checksum_ok: bool
+
+
+def _parameter(group: str, name: str, value: float | int | str, unit: str = "") -> dict[str, str]:
+    if isinstance(value, float):
+        value_text = f"{value:g}"
+    else:
+        value_text = str(value)
+    return {
+        "group": group,
+        "name": name,
+        "value": value_text,
+        "unit": unit,
+        "status": "ok",
+    }
+
+
+def _failed_parameters(group: str, names: list[tuple[str, str]], error: str) -> list[dict[str, str]]:
+    return [
+        {
+            "group": group,
+            "name": name,
+            "value": "--",
+            "unit": unit,
+            "status": error,
+        }
+        for name, unit in names
+    ]
+
+
+def _u16(data: bytes, offset: int) -> int:
+    if offset + 2 > len(data):
+        raise PaceProtocolError("PACE parameter response ended early")
+    return int.from_bytes(data[offset : offset + 2], "big")
+
+
+def _s16(data: bytes, offset: int) -> int:
+    if offset + 2 > len(data):
+        raise PaceProtocolError("PACE parameter response ended early")
+    return int.from_bytes(data[offset : offset + 2], "big", signed=True)
+
+
+def _temp_c(raw_value: int) -> float:
+    return round(raw_value / 10.0 - 273.0, 1)
+
+
+def decode_parameter_info(command: int, info: bytes, *, cells_per_pack: int = PACE_CELLS_PER_PACK) -> list[dict[str, str]]:
+    if command in {
+        CID2_PARAM_CELL_OV,
+        CID2_PARAM_TOTAL_OV,
+        CID2_PARAM_CELL_UV,
+        CID2_PARAM_TOTAL_UV,
+    }:
+        if len(info) < 8:
+            raise PaceProtocolError(f"PACE parameter 0x{command:02X} response is too short")
+        protect = _u16(info, 1)
+        alarm = _u16(info, 3)
+        release = _u16(info, 5)
+        delay_ms = info[7] * 100
+        is_pack = command in {CID2_PARAM_TOTAL_OV, CID2_PARAM_TOTAL_UV}
+        is_over = command in {CID2_PARAM_CELL_OV, CID2_PARAM_TOTAL_OV}
+        prefix = "Pack" if is_pack else "Cell"
+        protection = "OV" if is_over else "UV"
+        group = f"{prefix} {'Over' if is_over else 'Under'} Voltage"
+        if is_pack:
+            alarm_value = round(alarm / 1000.0, 3)
+            protect_value = round(protect / 1000.0, 3)
+            release_value = round(release / 1000.0, 3)
+        else:
+            alarm_value = round(alarm / 1000.0, 3)
+            protect_value = round(protect / 1000.0, 3)
+            release_value = round(release / 1000.0, 3)
+        return [
+            _parameter(group, f"{prefix} {protection} Alarm", alarm_value, "V"),
+            _parameter(group, f"{prefix} {protection} Protect", protect_value, "V"),
+            _parameter(group, f"{prefix} {protection}P Release", release_value, "V"),
+            _parameter(group, f"{prefix} {protection}P Delay Time", delay_ms, "ms"),
+        ]
+
+    if command in {CID2_PARAM_CHARGE_OC, CID2_PARAM_DISCHARGE_OC_1}:
+        if len(info) < 6:
+            raise PaceProtocolError(f"PACE parameter 0x{command:02X} response is too short")
+        protect = abs(_s16(info, 1))
+        alarm = abs(_s16(info, 3))
+        delay_ms = info[5] * 100
+        if command == CID2_PARAM_CHARGE_OC:
+            group = "Charge Overcurrent"
+            return [
+                _parameter(group, "CHG OC Alarm", alarm, "A"),
+                _parameter(group, "CHG OC Protect", protect, "A"),
+                _parameter(group, "CHG OCP Delay Time", delay_ms, "ms"),
+            ]
+        group = "Discharge Overcurrent"
+        return [
+            _parameter(group, "DSG OC Alarm", alarm, "A"),
+            _parameter(group, "DSG OC 1 Protect", protect, "A"),
+            _parameter(group, "DSG OCP 1 Delay Time", delay_ms, "ms"),
+        ]
+
+    if command == CID2_PARAM_DISCHARGE_OC_2:
+        if len(info) < 3:
+            raise PaceProtocolError("PACE discharge overcurrent 2 response is too short")
+        ranges: list[tuple[int, int]] = []
+        for offset in range(0, len(info) - 2, 3):
+            ranges.append((abs(_s16(info, offset)), info[offset + 2] * 100))
+        protect_values = "/".join(str(value) for value, _delay in ranges)
+        delay_values = "/".join(str(delay) for _value, delay in ranges)
+        group = "Discharge Overcurrent"
+        return [
+            _parameter(group, "DSG OC 2 Protect", protect_values, "A"),
+            _parameter(group, "DSG OCP 2 Delay Time", delay_values, "ms"),
+        ]
+
+    if command == CID2_PARAM_SHORT_CIRCUIT:
+        if not info:
+            raise PaceProtocolError("PACE short circuit response is empty")
+        return [_parameter("Discharge Overcurrent", "SCP Delay Time", info[-1] * 25, "us")]
+
+    if command == CID2_PARAM_BALANCE:
+        if len(info) < 4:
+            raise PaceProtocolError("PACE balance response is too short")
+        return [
+            _parameter("Balance / Sleep", "Balance Threshold", _u16(info, 0) / 1000.0, "V"),
+            _parameter("Balance / Sleep", "Balance Delta Vcell", _u16(info, 2), "mV"),
+        ]
+
+    if command == CID2_PARAM_SLEEP:
+        if len(info) < 4:
+            raise PaceProtocolError("PACE sleep response is too short")
+        return [
+            _parameter("Balance / Sleep", "Sleep Vcell", _u16(info, 0) / 1000.0, "V"),
+            _parameter("Balance / Sleep", "Delay Time", _u16(info, 2), "min"),
+        ]
+
+    if command == CID2_PARAM_FULL_CHARGE:
+        if len(info) < 5:
+            raise PaceProtocolError("PACE full charge response is too short")
+        return [
+            _parameter("Full Charge / SOC", "Pack FullCharge Voltage", _u16(info, 0) / 1000.0, "V"),
+            _parameter("Full Charge / SOC", "Pack FullCharge Current", _u16(info, 2), "mA"),
+            _parameter("Full Charge / SOC", "SOC Low Alarm", info[4], "%"),
+        ]
+
+    if command in {CID2_PARAM_TEMP_HIGH, CID2_PARAM_TEMP_LOW, CID2_PARAM_MOS_TEMP, CID2_PARAM_ENV_TEMP}:
+        payload = info[1:] if info and info[0] in (0x00, 0x01) else info
+        values = [_temp_c(_u16(payload, offset)) for offset in range(0, len(payload) - 1, 2)]
+        if command == CID2_PARAM_TEMP_HIGH and len(values) >= 6:
+            group = "High Temperature"
+            return [
+                _parameter(group, "CHG OT Alarm", values[1], "C"),
+                _parameter(group, "CHG OT Protect", values[0], "C"),
+                _parameter(group, "CHG OTP Release", values[2], "C"),
+                _parameter(group, "DSG OT Alarm", values[4], "C"),
+                _parameter(group, "DSG OT Protect", values[3], "C"),
+                _parameter(group, "DSG OTP Release", values[5], "C"),
+            ]
+        if command == CID2_PARAM_TEMP_LOW and len(values) >= 6:
+            group = "Low Temperature"
+            return [
+                _parameter(group, "CHG UT Alarm", values[1], "C"),
+                _parameter(group, "CHG UT Protect", values[0], "C"),
+                _parameter(group, "CHG UTP Release", values[2], "C"),
+                _parameter(group, "DSG UT Alarm", values[4], "C"),
+                _parameter(group, "DSG UT Protect", values[3], "C"),
+                _parameter(group, "DSG UTP Release", values[5], "C"),
+            ]
+        if command == CID2_PARAM_MOS_TEMP and len(values) >= 3:
+            group = "MOS Temperature"
+            return [
+                _parameter(group, "MOS OT Alarm", values[1], "C"),
+                _parameter(group, "MOS OT Protect", values[0], "C"),
+                _parameter(group, "MOS OTP Release", values[2], "C"),
+            ]
+        if command == CID2_PARAM_ENV_TEMP and len(values) >= 6:
+            group = "Environment Temperature"
+            return [
+                _parameter(group, "ENV UT Alarm", values[1], "C"),
+                _parameter(group, "ENV UT Protect", values[0], "C"),
+                _parameter(group, "ENV UTP Release", values[2], "C"),
+                _parameter(group, "ENV OT Alarm", values[4], "C"),
+                _parameter(group, "ENV OT Protect", values[3], "C"),
+                _parameter(group, "ENV OTP Release", values[5], "C"),
+            ]
+
+    raise PaceProtocolError(f"Unsupported or incomplete PACE parameter response: 0x{command:02X}")
+
+
+def parameter_names_for_command(command: int) -> tuple[str, list[tuple[str, str]]]:
+    definitions = {
+        CID2_PARAM_CELL_OV: ("Cell Over Voltage", [("Cell OV Alarm", "V"), ("Cell OV Protect", "V"), ("Cell OVP Release", "V"), ("Cell OVP Delay Time", "ms")]),
+        CID2_PARAM_TOTAL_OV: ("Pack Over Voltage", [("Pack OV Alarm", "V"), ("Pack OV Protect", "V"), ("Pack OVP Release", "V"), ("Pack OVP Delay Time", "ms")]),
+        CID2_PARAM_CELL_UV: ("Cell Under Voltage", [("Cell UV Alarm", "V"), ("Cell UV Protect", "V"), ("Cell UVP Release", "V"), ("Cell UVP Delay Time", "ms")]),
+        CID2_PARAM_TOTAL_UV: ("Pack Under Voltage", [("Pack UV Alarm", "V"), ("Pack UV Protect", "V"), ("Pack UVP Release", "V"), ("Pack UVP Delay Time", "ms")]),
+        CID2_PARAM_CHARGE_OC: ("Charge Overcurrent", [("CHG OC Alarm", "A"), ("CHG OC Protect", "A"), ("CHG OCP Delay Time", "ms")]),
+        CID2_PARAM_DISCHARGE_OC_1: ("Discharge Overcurrent", [("DSG OC Alarm", "A"), ("DSG OC 1 Protect", "A"), ("DSG OCP 1 Delay Time", "ms")]),
+        CID2_PARAM_DISCHARGE_OC_2: ("Discharge Overcurrent", [("DSG OC 2 Protect", "A"), ("DSG OCP 2 Delay Time", "ms")]),
+        CID2_PARAM_SHORT_CIRCUIT: ("Discharge Overcurrent", [("SCP Delay Time", "us")]),
+        CID2_PARAM_BALANCE: ("Balance / Sleep", [("Balance Threshold", "V"), ("Balance Delta Vcell", "mV")]),
+        CID2_PARAM_SLEEP: ("Balance / Sleep", [("Sleep Vcell", "V"), ("Delay Time", "min")]),
+        CID2_PARAM_FULL_CHARGE: ("Full Charge / SOC", [("Pack FullCharge Voltage", "V"), ("Pack FullCharge Current", "mA"), ("SOC Low Alarm", "%")]),
+        CID2_PARAM_TEMP_HIGH: ("High Temperature", [("CHG OT Alarm", "C"), ("CHG OT Protect", "C"), ("CHG OTP Release", "C"), ("DSG OT Alarm", "C"), ("DSG OT Protect", "C"), ("DSG OTP Release", "C")]),
+        CID2_PARAM_MOS_TEMP: ("MOS Temperature", [("MOS OT Alarm", "C"), ("MOS OT Protect", "C"), ("MOS OTP Release", "C")]),
+        CID2_PARAM_ENV_TEMP: ("Environment Temperature", [("ENV UT Alarm", "C"), ("ENV UT Protect", "C"), ("ENV UTP Release", "C"), ("ENV OT Alarm", "C"), ("ENV OT Protect", "C"), ("ENV OTP Release", "C")]),
+        CID2_PARAM_TEMP_LOW: ("Low Temperature", [("CHG UT Alarm", "C"), ("CHG UT Protect", "C"), ("CHG UTP Release", "C"), ("DSG UT Alarm", "C"), ("DSG UT Protect", "C"), ("DSG UTP Release", "C")]),
+    }
+    return definitions[command]
+
+
+def read_bms_parameters(
+    ser: serial.Serial,
+    *,
+    response_timeout: float,
+    cells_per_pack: int = PACE_CELLS_PER_PACK,
+) -> tuple[list[dict[str, str]], list[str], str]:
+    parameters: list[dict[str, str]] = []
+    errors: list[str] = []
+    raw_parts: list[str] = []
+    for command in PACE_PARAMETER_COMMANDS:
+        group, names = parameter_names_for_command(command)
+        try:
+            frame = send_command(
+                ser,
+                command,
+                response_timeout=response_timeout,
+                versions=(PACE_REQUEST_VERSION,),
+            )
+            raw_parts.append(f"0x{command:02X}={frame.info.hex().upper()}")
+            parameters.extend(
+                decode_parameter_info(command, frame.info, cells_per_pack=cells_per_pack)
+            )
+        except (TimeoutError, PaceProtocolError, serial.SerialException) as exc:
+            error = f"0x{command:02X} {group}: {exc}"
+            errors.append(error)
+            parameters.extend(_failed_parameters(group, names, str(exc)))
+    return parameters, errors, "; ".join(raw_parts)
 
 
 def _ascii_hex_byte(value: int) -> str:
@@ -272,7 +532,7 @@ def read_threshold_settings(ser: serial.Serial, *, response_timeout: float) -> t
         total_uv = u16_values(read_param(CID2_PARAM_TOTAL_UV))
         temp_high = [temp_c(value) for value in u16_values(read_param(CID2_PARAM_TEMP_HIGH))]
         temp_low = [temp_c(value) for value in u16_values(read_param(CID2_PARAM_TEMP_LOW))]
-        temp_mixed = [temp_c(value) for value in u16_values(read_param(CID2_PARAM_TEMP_MIXED))]
+        temp_mixed = [temp_c(value) for value in u16_values(read_param(CID2_PARAM_ENV_TEMP))]
     except (TimeoutError, PaceProtocolError, serial.SerialException) as exc:
         return [], [], [], f"PACE threshold read failed: {exc}"
 
@@ -440,6 +700,7 @@ def decode_analog_info(info: bytes, *, max_packs: int) -> dict[str, object]:
     pack_voltages_v: list[float] = []
     pack_currents_a: list[float] = []
     remaining_capacity_ah: float | None = None
+    full_capacity_ah: float | None = None
     cycle_count: int | None = None
     cells_per_pack: int | None = None
 
@@ -487,6 +748,11 @@ def decode_analog_info(info: bytes, *, max_packs: int) -> dict[str, object]:
             define_count = info[offset]
             offset += 1
             trailing_bytes = min(max(define_count, 0) * 2, len(info) - offset)
+            if trailing_bytes >= 2 and full_capacity_ah is None:
+                full_capacity_ah = round(
+                    int.from_bytes(info[offset : offset + 2], "big") * 0.01,
+                    2,
+                )
             if trailing_bytes >= 4 and cycle_count is None:
                 cycle_count = int.from_bytes(info[offset + 2 : offset + 4], "big")
             offset += trailing_bytes
@@ -505,6 +771,7 @@ def decode_analog_info(info: bytes, *, max_packs: int) -> dict[str, object]:
         "voltage_v": voltage_v,
         "current_a": current_a,
         "remaining_capacity_ah": remaining_capacity_ah,
+        "full_capacity_ah": full_capacity_ah,
         "cycle_count": cycle_count,
         "pack_voltages_v": pack_voltages_v,
     }
@@ -515,6 +782,7 @@ def poll_ps5120_bms(
     *,
     response_timeout: float,
     max_packs: int = 30,
+    include_static: bool = True,
 ) -> BmsSample:
     sample = BmsSample(timestamp=dt.datetime.now().isoformat(timespec="seconds"))
     sample.basic_checksum_ok = True
@@ -526,23 +794,18 @@ def poll_ps5120_bms(
     sample.pace_warn_errors = []
 
     raw_parts: list[str] = []
-    try:
-        sample.configured_pack_count, raw = read_pack_number(ser, response_timeout=response_timeout)
-        raw_parts.append(f"pack_number={raw}")
-    except (TimeoutError, PaceProtocolError, serial.SerialException):
-        sample.configured_pack_count = None
+    if include_static:
+        try:
+            sample.software_version, raw = read_ascii_info(ser, CID2_SOFTWARE_VERSION, response_timeout=response_timeout)
+            raw_parts.append(f"fw={raw}")
+        except (TimeoutError, PaceProtocolError, serial.SerialException):
+            pass
 
-    try:
-        sample.software_version, raw = read_ascii_info(ser, CID2_SOFTWARE_VERSION, response_timeout=response_timeout)
-        raw_parts.append(f"fw={raw}")
-    except (TimeoutError, PaceProtocolError, serial.SerialException):
-        pass
-
-    try:
-        sample.serial_number, raw = read_ascii_info(ser, CID2_PRODUCT_INFO, response_timeout=response_timeout)
-        raw_parts.append(f"product={raw}")
-    except (TimeoutError, PaceProtocolError, serial.SerialException):
-        pass
+        try:
+            sample.serial_number, raw = read_ascii_info(ser, CID2_PRODUCT_INFO, response_timeout=response_timeout)
+            raw_parts.append(f"product={raw}")
+        except (TimeoutError, PaceProtocolError, serial.SerialException):
+            pass
 
     analog_frame = send_command(ser, CID2_ANALOG, b"\xFF", response_timeout=response_timeout)
     sample.basic_raw = analog_frame.raw.hex(" ")
@@ -552,13 +815,17 @@ def poll_ps5120_bms(
     for key, value in analog.items():
         setattr(sample, key, value)
 
-    remaining, full, _design, raw = read_capacity_info(ser, response_timeout=response_timeout)
-    if raw:
-        raw_parts.append(f"capacity={raw}")
-    if remaining is not None:
-        sample.remaining_capacity_ah = remaining
-    if full is not None:
-        sample.full_capacity_ah = full
+    if include_static and sample.full_capacity_ah is None:
+        remaining, full, _design, raw = read_capacity_info(
+            ser,
+            response_timeout=response_timeout,
+        )
+        if raw:
+            raw_parts.append(f"capacity={raw}")
+        if remaining is not None:
+            sample.remaining_capacity_ah = remaining
+        if full is not None:
+            sample.full_capacity_ah = full
     if sample.full_capacity_ah and sample.remaining_capacity_ah is not None:
         sample.soc_percent = round(sample.remaining_capacity_ah / sample.full_capacity_ah * 100.0, 1)
 
@@ -582,25 +849,26 @@ def poll_ps5120_bms(
         for sensor_index in range(1, PACE_TEMPS_PER_PACK + 1)
     ][: len(sample.temperatures_c)]
     sample.product_model = "PS5120E"
-    (
-        sample.temperature_warning_lines,
-        sample.cell_voltage_warning_lines,
-        sample.total_voltage_warning_lines_v,
-        thresholds_raw,
-    ) = read_threshold_settings(ser, response_timeout=response_timeout)
-    sample.config_raw = thresholds_raw
-    if (
-        not sample.temperature_warning_lines
-        and not sample.cell_voltage_warning_lines
-        and not sample.total_voltage_warning_lines_v
-    ):
+    if include_static:
         (
             sample.temperature_warning_lines,
             sample.cell_voltage_warning_lines,
             sample.total_voltage_warning_lines_v,
-        ) = default_threshold_settings()
-        thresholds_raw = f"{thresholds_raw}; using PS5120E defaults"
+            thresholds_raw,
+        ) = read_threshold_settings(ser, response_timeout=response_timeout)
         sample.config_raw = thresholds_raw
-    raw_parts.append(f"thresholds={thresholds_raw}")
+        if (
+            not sample.temperature_warning_lines
+            and not sample.cell_voltage_warning_lines
+            and not sample.total_voltage_warning_lines_v
+        ):
+            (
+                sample.temperature_warning_lines,
+                sample.cell_voltage_warning_lines,
+                sample.total_voltage_warning_lines_v,
+            ) = default_threshold_settings()
+            thresholds_raw = f"{thresholds_raw}; using PS5120E defaults"
+            sample.config_raw = thresholds_raw
+        raw_parts.append(f"thresholds={thresholds_raw}")
     sample.stats_raw = " | ".join(raw_parts)
     return sample

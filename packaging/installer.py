@@ -15,11 +15,13 @@ APP_NAME = "BMSDataCollector"
 DISPLAY_NAME = "BMS Data Collector"
 EXE_NAME = "BMSDataCollector.exe"
 PORTABLE_ZIP_NAME = "BMSDataCollector_Portable.zip"
-REQUIRED_PAYLOAD_FILES = (
+RUNTIME_PAYLOAD_FILES = (
     Path("python/pythonw.exe"),
     Path("app/main.py"),
     Path("app/app_version.py"),
 )
+EXECUTABLE_PAYLOAD_FILES = (Path(EXE_NAME),)
+SUPPORTED_PAYLOADS = (EXECUTABLE_PAYLOAD_FILES, RUNTIME_PAYLOAD_FILES)
 
 
 class InstallationCancelled(Exception):
@@ -84,9 +86,9 @@ def safe_extract(archive: zipfile.ZipFile, destination: Path) -> None:
 
 
 def validate_payload(payload_root: Path) -> None:
-    missing = [str(path) for path in REQUIRED_PAYLOAD_FILES if not (payload_root / path).is_file()]
-    if missing:
-        raise FileNotFoundError(f"Portable runtime payload is incomplete: {', '.join(missing)}")
+    if any(all((payload_root / path).is_file() for path in required) for required in SUPPORTED_PAYLOADS):
+        return
+    raise FileNotFoundError("Portable application payload is incomplete.")
 
 
 def find_payload_root(extracted_root: Path) -> Path:
@@ -94,10 +96,10 @@ def find_payload_root(extracted_root: Path) -> Path:
     roots = [extracted_root]
     roots.extend(path for path in extracted_root.rglob("*") if path.is_dir())
     for candidate in roots:
-        if all((candidate / path).is_file() for path in REQUIRED_PAYLOAD_FILES):
+        if any(all((candidate / path).is_file() for path in required) for required in SUPPORTED_PAYLOADS):
             candidates.append(candidate)
     if not candidates:
-        raise FileNotFoundError("Portable runtime payload is incomplete.")
+        raise FileNotFoundError("Portable application payload is incomplete.")
     candidates.sort(key=lambda path: len(path.relative_to(extracted_root).parts))
     return candidates[0]
 
@@ -171,10 +173,19 @@ def install_portable(
             os.replace(payload_root, install_dir)
             payload_root = None
             validate_payload(install_dir)
-            pythonw = install_dir / "python" / "pythonw.exe"
-            main_script = install_dir / "app" / "main.py"
+            executable = install_dir / EXE_NAME
+            if executable.is_file():
+                target = executable
+                launch_command = [str(executable)]
+                shortcut_arguments = ""
+            else:
+                pythonw = install_dir / "python" / "pythonw.exe"
+                main_script = install_dir / "app" / "main.py"
+                target = pythonw
+                launch_command = [str(pythonw), str(main_script)]
+                shortcut_arguments = f'"{main_script}"'
             if create_links:
-                create_shortcuts(pythonw, f'"{main_script}"')
+                create_shortcuts(target, shortcut_arguments)
         except Exception:
             remove_tree_with_retry(install_dir)
             if old_install_moved and backup_dir.exists():
@@ -184,7 +195,7 @@ def install_portable(
 
         remove_tree_with_retry(backup_dir)
         old_install_moved = False
-        return pythonw, [str(pythonw), str(main_script)]
+        return target, launch_command
     finally:
         if old_install_moved and backup_dir.exists() and not install_dir.exists():
             os.replace(backup_dir, install_dir)

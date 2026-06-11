@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import csv
 import datetime as dt
+import json
 import sys
 import time
 from dataclasses import dataclass
@@ -21,6 +22,18 @@ DEFAULT_BAUD_RATES = [9600, 19200, 38400, 115200]
 PRODUCT_HV140 = "HV140"
 PRODUCT_PS5120E = "PS5120E"
 SUPPORTED_PRODUCT_MODELS = [PRODUCT_HV140, PRODUCT_PS5120E]
+CSV_STATIC_FIELDS = {
+    "product_model",
+    "serial_number",
+    "software_version",
+    "cells_checksum_ok",
+    "temperature_warning_lines",
+    "cell_voltage_warning_lines",
+    "total_voltage_warning_lines_v",
+    "bms_parameters",
+    "bms_parameter_errors",
+    "config_raw",
+}
 PROBE_REQUESTS = [
     ("jbd_hv_main_1000_107d", READ_BASIC_INFO),
     ("jbd_hv_config_2200_2211", READ_CELL_VOLTAGES),
@@ -72,6 +85,52 @@ class ScanResult:
     raw: str
 
 
+def battery_identity(sample: hv.BmsSample | None) -> tuple[str, str, str, int, int, int]:
+    if sample is None:
+        return "", "", "", 0, 0, 0
+    return (
+        (sample.product_model or "").strip().upper(),
+        (sample.serial_number or "").strip().upper(),
+        str(sample.software_version or "").strip().upper(),
+        int(sample.configured_pack_count or 0),
+        int(sample.cells_per_pack or 0),
+        int(sample.total_cell_count or 0),
+    )
+
+
+def battery_identity_changed(
+    previous: tuple[str, str, str, int, int, int] | None,
+    current: tuple[str, str, str, int, int, int],
+) -> bool:
+    if not previous or not previous[0]:
+        return False
+    if previous[0] != current[0]:
+        return True
+    previous_serial = previous[1]
+    current_serial = current[1]
+    if previous_serial and current_serial:
+        return previous_serial != current_serial
+    previous_fallback = previous[2:]
+    current_fallback = current[2:]
+    return any(previous_fallback) and any(current_fallback) and previous_fallback != current_fallback
+
+
+def battery_identity_label(identity: tuple[str, str, str, int, int, int]) -> str:
+    model, serial, firmware, packs, cells_per_pack, total_cells = identity
+    parts = [model or "UNKNOWN"]
+    if serial:
+        parts.append(f"SN {serial}")
+    elif firmware:
+        parts.append(f"FW {firmware}")
+    if packs:
+        parts.append(f"{packs} packs")
+    if cells_per_pack:
+        parts.append(f"{cells_per_pack} cells/pack")
+    elif total_cells:
+        parts.append(f"{total_cells} cells")
+    return ", ".join(parts)
+
+
 def read_any_bytes(ser: serial.Serial, *, timeout: float, idle_timeout: float = 0.25) -> bytes:
     deadline = time.monotonic() + timeout
     idle_deadline: float | None = None
@@ -99,6 +158,7 @@ def poll_bms(
     cells_per_pack: int | None,
     max_packs: int,
     product_model: str = PRODUCT_HV140,
+    include_static: bool = True,
 ) -> hv.BmsSample:
     if product_model == PRODUCT_PS5120E:
         try:
@@ -106,6 +166,7 @@ def poll_bms(
                 ser,
                 response_timeout=response_timeout,
                 max_packs=max_packs,
+                include_static=include_static,
             )
         except pace.PaceProtocolError as exc:
             raise JbdProtocolError(str(exc)) from exc
@@ -118,9 +179,46 @@ def poll_bms(
             max_packs=max_packs,
             pack_count_override=pack_count,
             cells_per_pack_override=cells_per_pack,
+            include_static=include_static,
         )
     except hv.JbdHvProtocolError as exc:
         raise JbdProtocolError(str(exc)) from exc
+
+
+def apply_cached_static_data(sample: hv.BmsSample, cached: hv.BmsSample | None) -> None:
+    if cached is None:
+        return
+    sample.software_version = sample.software_version or cached.software_version
+    sample.serial_number = sample.serial_number or cached.serial_number
+    sample.configured_pack_count = sample.configured_pack_count or cached.configured_pack_count
+    sample.cells_per_pack = sample.cells_per_pack or cached.cells_per_pack
+    sample.total_cell_count = sample.total_cell_count or cached.total_cell_count
+    sample.temperature_warning_lines = (
+        sample.temperature_warning_lines or cached.temperature_warning_lines
+    )
+    sample.cell_voltage_warning_lines = (
+        sample.cell_voltage_warning_lines or cached.cell_voltage_warning_lines
+    )
+    sample.total_voltage_warning_lines_v = (
+        sample.total_voltage_warning_lines_v or cached.total_voltage_warning_lines_v
+    )
+    sample.config_raw = sample.config_raw or cached.config_raw
+    sample.bms_parameters = sample.bms_parameters or cached.bms_parameters
+    sample.bms_parameter_errors = (
+        sample.bms_parameter_errors or cached.bms_parameter_errors
+    )
+    sample.full_capacity_ah = sample.full_capacity_ah or cached.full_capacity_ah
+    if (
+        sample.soc_percent is None
+        and sample.full_capacity_ah
+        and sample.remaining_capacity_ah is not None
+    ):
+        sample.soc_percent = round(
+            sample.remaining_capacity_ah / sample.full_capacity_ah * 100.0,
+            1,
+        )
+    if sample.cells_checksum_ok is None:
+        sample.cells_checksum_ok = cached.cells_checksum_ok
 
 
 def available_ports() -> list[str]:
@@ -192,24 +290,21 @@ def scan_one(
             timeout=0.1,
             write_timeout=1.0,
         ) as ser:
-            sample = poll_bms(
+            main = hv.read_range(
                 ser,
-                response_timeout=response_timeout,
-                enforce_checksum=enforce_checksum,
-                invert_current=invert_current,
-                pack_count=None,
-                cells_per_pack=None,
-                max_packs=max_packs,
-                product_model=product_model,
+                0x1000,
+                0x107D,
+                response_timeout=min(response_timeout, 1.2),
             )
+            decoded = hv.decode_main_frame(main)
             return ScanResult(
                 port=port,
                 baud=baud,
                 product_model=product_model,
-                voltage_v=sample.voltage_v,
-                soc_percent=sample.soc_percent,
-                cells_per_pack=sample.cells_per_pack,
-                raw=sample.basic_raw,
+                voltage_v=decoded.get("voltage_v"),
+                soc_percent=decoded.get("soc_percent"),
+                cells_per_pack=None,
+                raw=main.raw.hex(" "),
             )
     except (TimeoutError, JbdProtocolError, serial.SerialException, OSError, ValueError):
         return None
@@ -319,6 +414,8 @@ def format_value(value: Any, suffix: str) -> str:
 def csv_fieldnames(max_cells: int, max_temps: int) -> list[str]:
     fields = [
         "timestamp",
+        "acquisition_duration_s",
+        "record_event",
         "product_model",
         "voltage_v",
         "current_a",
@@ -341,6 +438,11 @@ def csv_fieldnames(max_cells: int, max_temps: int) -> list[str]:
         "basic_checksum_ok",
         "cells_checksum_ok",
         "error_codes",
+        "temperature_warning_lines",
+        "cell_voltage_warning_lines",
+        "total_voltage_warning_lines_v",
+        "bms_parameters",
+        "bms_parameter_errors",
     ]
     fields.extend(f"temp_{index:02d}_c" for index in range(1, max_temps + 1))
     fields.extend(f"cell_{index:02d}_mv" for index in range(1, max_cells + 1))
@@ -348,9 +450,17 @@ def csv_fieldnames(max_cells: int, max_temps: int) -> list[str]:
     return fields
 
 
-def sample_to_row(sample: hv.BmsSample, *, max_cells: int, max_temps: int) -> dict[str, Any]:
+def sample_to_row(
+    sample: hv.BmsSample,
+    *,
+    max_cells: int,
+    max_temps: int,
+    include_static: bool = True,
+) -> dict[str, Any]:
     row = {
         "timestamp": sample.timestamp,
+        "acquisition_duration_s": sample.acquisition_duration_s,
+        "record_event": sample.record_event,
         "product_model": getattr(sample, "product_model", ""),
         "voltage_v": sample.voltage_v,
         "current_a": sample.current_a,
@@ -373,6 +483,26 @@ def sample_to_row(sample: hv.BmsSample, *, max_cells: int, max_temps: int) -> di
         "basic_checksum_ok": sample.basic_checksum_ok,
         "cells_checksum_ok": sample.cells_checksum_ok,
         "error_codes": "; ".join(sample_error_codes(sample)),
+        "temperature_warning_lines": json.dumps(
+            sample.temperature_warning_lines,
+            separators=(",", ":"),
+        ),
+        "cell_voltage_warning_lines": json.dumps(
+            sample.cell_voltage_warning_lines,
+            separators=(",", ":"),
+        ),
+        "total_voltage_warning_lines_v": json.dumps(
+            sample.total_voltage_warning_lines_v,
+            separators=(",", ":"),
+        ),
+        "bms_parameters": json.dumps(
+            sample.bms_parameters,
+            separators=(",", ":"),
+        ),
+        "bms_parameter_errors": json.dumps(
+            sample.bms_parameter_errors,
+            separators=(",", ":"),
+        ),
         "basic_raw": sample.basic_raw,
         "config_raw": getattr(sample, "config_raw", ""),
         "cells_raw": sample.cells_raw,
@@ -386,6 +516,9 @@ def sample_to_row(sample: hv.BmsSample, *, max_cells: int, max_temps: int) -> di
         row[f"cell_{index + 1:02d}_mv"] = (
             sample.cell_voltages_mv[index] if index < len(sample.cell_voltages_mv) else ""
         )
+    if not include_static:
+        for field in CSV_STATIC_FIELDS:
+            row[field] = ""
     return row
 
 
@@ -417,16 +550,25 @@ class CsvLogger:
         self.max_temps = max_temps
         self.fieldnames = csv_fieldnames(max_cells, max_temps)
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        new_file = not self.path.exists() or self.path.stat().st_size == 0
         self.file = self.path.open("a", newline="", encoding="utf-8")
         self.writer = csv.DictWriter(self.file, fieldnames=self.fieldnames)
-        if self.path.stat().st_size == 0:
+        if new_file:
             self.writer.writeheader()
             self.file.flush()
+        # 每次開啟 logger 的第一筆都建立靜態資料檢查點，支援續寫既有檔案。
+        self.static_written = False
 
     def write(self, sample: hv.BmsSample) -> None:
         self.writer.writerow(
-            sample_to_row(sample, max_cells=self.max_cells, max_temps=self.max_temps)
+            sample_to_row(
+                sample,
+                max_cells=self.max_cells,
+                max_temps=self.max_temps,
+                include_static=not self.static_written,
+            )
         )
+        self.static_written = True
         self.file.flush()
 
     def close(self) -> None:
@@ -459,7 +601,12 @@ def build_parser() -> argparse.ArgumentParser:
         default=DEFAULT_BAUD_RATES,
         help="Comma-separated baud rates for --scan/--auto. Default: 9600,19200,38400,115200.",
     )
-    parser.add_argument("--interval", type=float, default=5.0, help="Polling interval in seconds.")
+    parser.add_argument(
+        "--interval",
+        type=float,
+        default=5.0,
+        help="Polling interval in seconds; use 0 to start the next cycle immediately.",
+    )
     parser.add_argument("--count", type=int, help="Number of samples to collect before exiting.")
     parser.add_argument("--timeout", type=float, default=1.5, help="Response timeout in seconds.")
     parser.add_argument("--csv", type=Path, default=Path("bms_log.csv"), help="CSV output path.")
@@ -582,9 +729,10 @@ def main() -> int:
             print("Press Ctrl+C to stop.")
 
             samples_collected = 0
+            static_sample: hv.BmsSample | None = None
             next_poll = time.monotonic()
             while True:
-                wait_time = next_poll - time.monotonic()
+                wait_time = next_poll - time.monotonic() if args.interval > 0 else 0.0
                 if wait_time > 0:
                     time.sleep(wait_time)
                 started_at = time.monotonic()
@@ -594,10 +742,31 @@ def main() -> int:
                         response_timeout=args.timeout,
                         enforce_checksum=not args.no_checksum,
                         invert_current=args.invert_current,
-                        pack_count=args.pack_count,
-                        cells_per_pack=args.cells_per_pack,
+                        pack_count=(
+                            args.pack_count
+                            or (
+                                static_sample.configured_pack_count
+                                if static_sample is not None
+                                else None
+                            )
+                        ),
+                        cells_per_pack=(
+                            args.cells_per_pack
+                            or (
+                                static_sample.cells_per_pack
+                                if static_sample is not None
+                                else None
+                            )
+                        ),
                         max_packs=args.max_packs,
+                        include_static=static_sample is None,
                     )
+                    apply_cached_static_data(sample, static_sample)
+                    if static_sample is None:
+                        static_sample = sample
+                    completed_at = time.monotonic()
+                    sample.timestamp = dt.datetime.now().isoformat(timespec="seconds")
+                    sample.acquisition_duration_s = round(completed_at - started_at, 3)
                     print_sample(sample, show_raw=args.raw)
                     if logger is None:
                         log_path = build_log_path(args.csv, sample)
@@ -608,11 +777,17 @@ def main() -> int:
                 except (TimeoutError, JbdProtocolError, serial.SerialException) as exc:
                     timestamp = dt.datetime.now().isoformat(timespec="seconds")
                     print(f"[{timestamp}] read error: {exc}", file=sys.stderr)
+                    if args.interval <= 0:
+                        time.sleep(0.25)
                 if args.count is not None and samples_collected >= args.count:
                     break
-                next_poll += args.interval
-                if next_poll <= started_at:
-                    next_poll = started_at + args.interval
+                completed_at = time.monotonic()
+                if args.interval <= 0:
+                    next_poll = completed_at
+                else:
+                    next_poll += args.interval
+                    if next_poll <= completed_at:
+                        next_poll = completed_at
     except (serial.SerialException, OSError) as exc:
         print(f"Could not open/read {args.port}: {exc}", file=sys.stderr)
         return 1

@@ -1,6 +1,6 @@
 # BMS Data Collector
 
-Current version: `V1.0.1`
+Current version: `V1.0.2`
 
 Windows GUI and CSV logger for battery management systems used in MES battery products.
 
@@ -25,7 +25,11 @@ The application scans serial ports, identifies the connected BMS model, reads li
 - CSV logging with generated filenames containing date, time, product model, and serial number
 - CSV log loading for offline chart review
 - Startup update check against GitHub releases or tags
-- PS5120E protection threshold lines are read from the BMS when available, with safe defaults as fallback
+- Read-only BMS parameter page for HV140 and PS5120E
+- Protection threshold lines are read from the BMS when available, with safe defaults as fallback
+- Battery identity check at every recording start, with a prominent event if the battery changes
+- Five fixed acquisition rates: real-time, 10 seconds, 30 seconds, 1 minute, and 5 minutes
+- Default log folder under Documents, with support for a user-selected destination
 - Multi-pack support:
   - HV140: up to 14 packs, with PDU temperature sensors
   - PS5120E: up to 30 packs, no PDU
@@ -34,11 +38,11 @@ The application scans serial ports, identifies the connected BMS model, reads li
 
 Download the Windows installer:
 
-[BMSDataCollector_Setup.exe](https://github.com/tatsuo25103/BMS/releases/download/v1.0.1/BMSDataCollector_Setup.exe)
+[BMSDataCollector_Setup.exe](https://github.com/tatsuo25103/BMS/releases/download/v1.0.2/BMSDataCollector_Setup.exe)
 
 Standalone executable:
 
-[BMSDataCollector.exe](https://github.com/tatsuo25103/BMS/releases/download/v1.0.1/BMSDataCollector.exe)
+[BMSDataCollector.exe](https://github.com/tatsuo25103/BMS/releases/download/v1.0.2/BMSDataCollector.exe)
 
 Install Python 3.10 or newer, then install the dependency:
 
@@ -61,6 +65,11 @@ Typical workflow:
 5. Click `Export CSV...` to save a copy of the current log.
 
 The current CSV file path is shown in the left status panel under `CSV File`.
+New logs default to `Documents\BMS Data Collector Logs`. Use `Export CSV...`
+before recording to select another location.
+
+The acquisition-rate slider has five fixed positions: `Real-time`, `10s`,
+`30s`, `1 min`, and `5 min`.
 
 ## Command Line
 
