@@ -58,6 +58,24 @@ $shortcut.Save()
     run_powershell(shortcut_script)
 
 
+def normalize_portable_payload(install_dir: Path) -> None:
+    pythonw = install_dir / "python" / "pythonw.exe"
+    main_script = install_dir / "app" / "main.py"
+    if pythonw.exists() and main_script.exists():
+        return
+
+    # Portable ZIP 可能包含最外層 BMSDataCollector 資料夾，安裝時將內容提升一層。
+    nested_root = install_dir / APP_NAME
+    nested_pythonw = nested_root / "python" / "pythonw.exe"
+    nested_main_script = nested_root / "app" / "main.py"
+    if not nested_pythonw.exists() or not nested_main_script.exists():
+        raise FileNotFoundError("Portable runtime payload is incomplete.")
+
+    for child in nested_root.iterdir():
+        shutil.move(str(child), str(install_dir / child.name))
+    nested_root.rmdir()
+
+
 def install() -> tuple[Path, list[str]]:
     install_dir = Path.home() / "AppData" / "Local" / "Programs" / APP_NAME
     portable_zip = resource_path(PORTABLE_ZIP_NAME)
@@ -67,10 +85,9 @@ def install() -> tuple[Path, list[str]]:
         install_dir.mkdir(parents=True, exist_ok=True)
         with zipfile.ZipFile(portable_zip, "r") as archive:
             archive.extractall(install_dir)
+        normalize_portable_payload(install_dir)
         pythonw = install_dir / "python" / "pythonw.exe"
         main_script = install_dir / "app" / "main.py"
-        if not pythonw.exists() or not main_script.exists():
-            raise FileNotFoundError("Portable runtime payload is incomplete.")
         create_shortcuts(pythonw, f'"{main_script}"')
         return pythonw, [str(pythonw), str(main_script)]
 
