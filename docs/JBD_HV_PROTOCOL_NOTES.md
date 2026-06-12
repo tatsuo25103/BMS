@@ -52,25 +52,23 @@ crc:     09 76
   - Total/pack under voltage: `0x1848`, raw scale `0.1 V`
   - Each group is decoded as L1/L2/L3 values at word offsets `0`, `4`, and `8`.
   - The GUI pack-voltage chart divides total-voltage thresholds by the detected pack count because the plotted pack voltage is derived per battery pack.
-- The read-only `BMS Parameters` page uses the same 12-word alarm groups:
-  - L1 value: word `0`
-  - L2 value/delay: words `4` and `5`
-  - L3 protection value/delay/release: words `8`, `9`, and `10`
-  - Discharge overcurrent displays L1 as Alarm, L2 as OC1, and L3 as OC2.
-- Additional read-only HV140 settings:
-  - Balance start voltage: `0x1F04`, mV
-  - Balance start delta: `0x1F06`, mV
-  - Full-charge calibration voltage: `0x1F0C`, `0.1 V`
-  - Full-charge calibration current: `0x1F0E`, mA
-  - Standby sleep voltage: `0x1F78`, mV
-  - Standby sleep delay: `0x1F7A`, minutes
-- The original HV140 parameter page contains 53 fields. `SCP Delay Time` remains
-  visible as the 53rd field, but Protocol V3.37 does not define a readable
-  register for it. The application marks it unavailable instead of inventing a
-  value.
-- Each HV140 field is tied to an explicit register address, scale, and unit.
-  Reads use exact two-byte ranges with one retry because some HV140 firmware
-  drops broad parameter-range requests.
+- The read-only `BMS Parameters` page follows the HV140 factory three-level
+  parameter page. It contains 18 groups and 165 displayed fields:
+  - Cell/total over-voltage and under-voltage
+  - Charge/discharge overcurrent
+  - Charge/discharge high and low temperature
+  - Environment high and low temperature
+  - Voltage difference, temperature difference, and temperature rise
+  - Terminal high temperature, insulation resistance low, and SOC low
+- Each group occupies 12 words. The displayed standard fields use:
+  - L1 value/delay/release: words `0`, `1`, and `2`
+  - L2 value/delay/release: words `4`, `5`, and `6`
+  - L3 value/delay/release: words `8`, `9`, and `10`
+- Cell over-voltage also displays L2 release SOC from word `7`.
+- Charge and discharge overcurrent display L3 lock count and recovery delay
+  from words `10` and `11`.
+- Parameter scanning reads each 12-word group in one command with retries,
+  instead of issuing one command per displayed field.
 
 ## Error Decoding
 

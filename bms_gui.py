@@ -899,7 +899,9 @@ class BmsCollectorGui(tk.Tk):
             font=("Segoe UI", 11, "bold"),
             anchor="w",
         ).grid(row=0, column=0, sticky="w", padx=(12, 8), pady=8)
-        self.parameter_status_var = tk.StringVar(value="Run Scan to read BMS parameter settings.")
+        self.parameter_status_var = tk.StringVar(
+            value="Run Start or Scan to read BMS parameter settings."
+        )
         tk.Label(
             header,
             textvariable=self.parameter_status_var,
@@ -1056,7 +1058,9 @@ class BmsCollectorGui(tk.Tk):
         parameters = list(getattr(sample, "bms_parameters", []) or [])
         errors = list(getattr(sample, "bms_parameter_errors", []) or [])
         if not parameters:
-            self.parameter_status_var.set(f"Run Scan to read the connected {model} parameter settings.")
+            self.parameter_status_var.set(
+                f"Run Start or Scan to read the connected {model} parameter settings."
+            )
         else:
             ok_count = sum(1 for item in parameters if item.get("status") == "ok")
             unavailable_count = sum(
@@ -1698,11 +1702,9 @@ class BmsCollectorGui(tk.Tk):
                         break
                     started_at = time.monotonic()
                     try:
-                        sample = poll_bms(
+                        sample = poll_bms_with_retry(
                             ser,
                             response_timeout=timeout,
-                            enforce_checksum=True,
-                            invert_current=False,
                             pack_count=(
                                 static_sample.configured_pack_count
                                 if static_sample is not None
@@ -1716,6 +1718,7 @@ class BmsCollectorGui(tk.Tk):
                             max_packs=max_packs,
                             product_model=product_model,
                             include_static=static_sample is None,
+                            stop_event=self.stop_event,
                         )
                         apply_cached_static_data(sample, static_sample)
                         if static_sample is None:
@@ -1730,29 +1733,38 @@ class BmsCollectorGui(tk.Tk):
                             ):
                                 apply_cached_static_data(sample, cached_reference)
                             if not sample.bms_parameters:
-                                if product_model == PRODUCT_PS5120E:
-                                    (
-                                        sample.bms_parameters,
-                                        sample.bms_parameter_errors,
-                                        parameter_raw,
-                                    ) = read_bms_parameters(
-                                        ser,
-                                        response_timeout=timeout,
-                                        cells_per_pack=sample.cells_per_pack or 16,
-                                    )
-                                else:
-                                    (
-                                        sample.bms_parameters,
-                                        sample.bms_parameter_errors,
-                                        parameter_raw,
-                                    ) = read_hv_bms_parameters(
-                                        ser,
-                                        response_timeout=timeout,
-                                    )
-                                if parameter_raw:
-                                    sample.stats_raw = (
-                                        f"{sample.stats_raw} | parameters={parameter_raw}"
-                                    )
+                                try:
+                                    if product_model == PRODUCT_PS5120E:
+                                        (
+                                            sample.bms_parameters,
+                                            sample.bms_parameter_errors,
+                                            parameter_raw,
+                                        ) = read_bms_parameters(
+                                            ser,
+                                            response_timeout=timeout,
+                                            cells_per_pack=sample.cells_per_pack or 16,
+                                        )
+                                    else:
+                                        (
+                                            sample.bms_parameters,
+                                            sample.bms_parameter_errors,
+                                            parameter_raw,
+                                        ) = read_hv_bms_parameters(
+                                            ser,
+                                            response_timeout=timeout,
+                                        )
+                                    if parameter_raw:
+                                        sample.stats_raw = (
+                                            f"{sample.stats_raw} | parameters={parameter_raw}"
+                                        )
+                                except (
+                                    TimeoutError,
+                                    JbdProtocolError,
+                                    serial.SerialException,
+                                    ValueError,
+                                ) as exc:
+                                    # 參數屬於低頻靜態資料，讀取失敗不應被視為即時封包遺失。
+                                    sample.bms_parameter_errors = [str(exc)]
                             if changed and previous_identity is not None:
                                 sample.record_event = (
                                     "BATTERY CHANGED: "
@@ -1777,6 +1789,8 @@ class BmsCollectorGui(tk.Tk):
                             self.events.put(("csv_path", str(log_path)))
                         logger.write(sample)
                         self.events.put(("sample", sample))
+                        if static_sample is sample:
+                            self.events.put(("parameters", sample))
                         if sample.record_event.startswith("BATTERY CHANGED:"):
                             self.events.put(("battery_changed", sample.record_event))
                     except (TimeoutError, JbdProtocolError, serial.SerialException, ValueError) as exc:
@@ -1785,7 +1799,9 @@ class BmsCollectorGui(tk.Tk):
                             break
                     completed_at = time.monotonic()
                     if interval <= 0:
-                        next_poll = completed_at
+                        # HV140 在一個完整循環後需要短暫的總線安靜時間；
+                        # 立即送出下一筆會穩定造成成功與逾時交替。
+                        next_poll = completed_at + minimum_cycle_quiet_time(product_model)
                     else:
                         next_poll += interval
                         if next_poll <= completed_at:
@@ -1825,6 +1841,8 @@ class BmsCollectorGui(tk.Tk):
                 break
             if event == "sample":
                 self._show_sample(payload)
+            elif event == "parameters":
+                self._show_bms_parameters(payload)
             elif event == "packet_error":
                 self._show_packet_error(str(payload))
             elif event == "battery_changed":
@@ -2605,6 +2623,52 @@ def acquisition_rate_index(value: object) -> int:
 
 def acquisition_rate_seconds(value: object) -> float:
     return ACQUISITION_RATE_OPTIONS[acquisition_rate_index(value)][1]
+
+
+def minimum_cycle_quiet_time(product_model: str) -> float:
+    return 0.2 if product_model == PRODUCT_HV140 else 0.0
+
+
+def poll_bms_with_retry(
+    ser: serial.Serial,
+    *,
+    response_timeout: float,
+    pack_count: int | None,
+    cells_per_pack: int | None,
+    max_packs: int,
+    product_model: str,
+    include_static: bool,
+    stop_event: threading.Event | None = None,
+) -> BmsSample:
+    last_error: Exception | None = None
+    for attempt in range(2):
+        try:
+            return poll_bms(
+                ser,
+                response_timeout=response_timeout,
+                enforce_checksum=True,
+                invert_current=False,
+                pack_count=pack_count,
+                cells_per_pack=cells_per_pack,
+                max_packs=max_packs,
+                product_model=product_model,
+                include_static=include_static,
+            )
+        except (TimeoutError, JbdProtocolError, serial.SerialException, ValueError) as exc:
+            last_error = exc
+            if attempt == 0:
+                try:
+                    ser.reset_input_buffer()
+                except serial.SerialException:
+                    pass
+                quiet_time = minimum_cycle_quiet_time(product_model)
+                if stop_event is not None:
+                    if stop_event.wait(quiet_time):
+                        raise exc
+                elif quiet_time > 0:
+                    time.sleep(quiet_time)
+    assert last_error is not None
+    raise last_error
 
 
 def acquisition_rate_label(

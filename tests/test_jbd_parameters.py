@@ -22,27 +22,47 @@ def _frame(start: int, words: list[int]) -> HvRegisterFrame:
 
 
 class JbdParameterTests(unittest.TestCase):
-    def test_hv_parameter_page_matches_53_field_template(self) -> None:
-        self.assertEqual(len(HV_PARAMETER_FIELDS), 53)
+    def test_hv_parameter_page_matches_full_factory_template(self) -> None:
+        self.assertEqual(len(HV_PARAMETER_FIELDS), 165)
         self.assertEqual(
             len({(group, name) for group, name, _address, _type in HV_PARAMETER_FIELDS}),
-            53,
+            165,
         )
-        scp = [item for item in HV_PARAMETER_FIELDS if item[1] == "SCP Delay Time"]
-        self.assertEqual(scp, [("Discharge Overcurrent", "SCP Delay Time", None, "microseconds")])
+        groups = {group for group, _name, _address, _type in HV_PARAMETER_FIELDS}
+        self.assertEqual(len(groups), 18)
+        self.assertIn("Voltage Difference", groups)
+        self.assertIn("Temperature Difference", groups)
+        self.assertIn("Temperature Rise", groups)
+        self.assertIn("Terminal High Temperature", groups)
+        self.assertIn("Insulation Resistance Low", groups)
 
     def test_key_hv_parameter_addresses(self) -> None:
         addresses = {
-            name: address
+            (group, name): address
             for _group, name, address, _value_type in HV_PARAMETER_FIELDS
+            for group in [_group]
         }
-        self.assertEqual(addresses["Cell OV Protect"], 0x1810)
-        self.assertEqual(addresses["Pack UV Protect"], 0x1858)
-        self.assertEqual(addresses["DSG OC 1 Protect"], 0x1898)
-        self.assertEqual(addresses["DSG OC 2 Protect"], 0x18A0)
-        self.assertEqual(addresses["CHG OT Protect"], 0x18B8)
-        self.assertEqual(addresses["DSG UTP Release"], 0x1904)
-        self.assertEqual(addresses["SOC Low Alarm"], 0x1998)
+        self.assertEqual(
+            addresses[("Cell Over Voltage", "L2 Release SOC")],
+            0x180E,
+        )
+        self.assertEqual(
+            addresses[("Total Under Voltage", "L3 Protect Value")],
+            0x1858,
+        )
+        self.assertEqual(
+            addresses[("Discharge Overcurrent", "L3 Recovery Delay")],
+            0x18A6,
+        )
+        self.assertEqual(
+            addresses[("Temperature Difference", "L1 Alarm Value")],
+            0x1938,
+        )
+        self.assertEqual(
+            addresses[("Insulation Resistance Low", "L3 Protect Value")],
+            0x1990,
+        )
+        self.assertEqual(addresses[("SOC Low", "L1 Alarm Value")], 0x1998)
 
     def test_decode_cell_over_voltage_group(self) -> None:
         frame = _frame(

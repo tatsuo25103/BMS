@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+from unittest.mock import Mock, patch
 
 from bms_collector import (
     apply_cached_static_data,
@@ -13,6 +14,8 @@ from bms_gui import (
     acquisition_rate_label,
     acquisition_rate_seconds,
     chart_display_points,
+    minimum_cycle_quiet_time,
+    poll_bms_with_retry,
 )
 from jbd_hv_protocol import BmsSample
 
@@ -76,6 +79,36 @@ class RuntimeOptimizationTests(unittest.TestCase):
             acquisition_rate_label("Real-time", 2.34),
             "Real-time  last 2.3s",
         )
+
+    def test_hv140_real_time_cycles_have_a_bus_quiet_period(self) -> None:
+        self.assertEqual(minimum_cycle_quiet_time("HV140"), 0.2)
+        self.assertEqual(minimum_cycle_quiet_time("PS5120E"), 0.0)
+
+    @patch("bms_gui.time.sleep")
+    @patch("bms_gui.poll_bms")
+    def test_poll_retries_once_before_reporting_packet_loss(
+        self,
+        poll_mock: Mock,
+        sleep_mock: Mock,
+    ) -> None:
+        expected = BmsSample(timestamp="ok")
+        poll_mock.side_effect = [TimeoutError("temporary timeout"), expected]
+        serial_mock = Mock()
+
+        result = poll_bms_with_retry(
+            serial_mock,
+            response_timeout=3.0,
+            pack_count=4,
+            cells_per_pack=16,
+            max_packs=14,
+            product_model="HV140",
+            include_static=False,
+        )
+
+        self.assertIs(result, expected)
+        self.assertEqual(poll_mock.call_count, 2)
+        serial_mock.reset_input_buffer.assert_called_once_with()
+        sleep_mock.assert_called_once_with(0.2)
 
     def test_cached_static_data_is_applied_without_overwriting_live_values(self) -> None:
         cached = BmsSample(
